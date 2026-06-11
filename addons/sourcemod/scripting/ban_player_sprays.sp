@@ -17,7 +17,7 @@
 #include <adminmenu>
 #include <clientprefs>
 #include <sdktools>
-#include <morecolors>
+#include <multicolors>
 #include <regex>
 
 #undef      REQUIRE_PLUGIN
