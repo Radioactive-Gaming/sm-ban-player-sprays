@@ -20,42 +20,55 @@
 #include <sdktools>
 #include <sourcemod>
 
-#undef REQUIRE_PLUGIN
-#define PLUGIN_VERSION "0.5.3"
+#define STEAMID64_LENGTH   18
 
-bool          AllowSpraysBeforeAuthentication;
-bool          CanViewSprayInfo[MAXPLAYERS + 1];
-bool          Debug;
-bool          lateLoad;
-bool          PlayerCachedCookie[MAXPLAYERS + 1] = {false, ...};
-bool          PlayerCanSpray[MAXPLAYERS + 1]     = {false, ...};
-bool          RemoveSprayOnBan;
-bool          TraceSprays;
-char          g_BanSprayTarget[MAXPLAYERS + 1];
-char          SprayerID[MAXPLAYERS + 1][32];
-char          SprayerName[MAXPLAYERS + 1][MAX_NAME_LENGTH];
-char          TmpLoc[30];
-int           DisplayType;
-int           SprayProtection;
-int           WarnType;
-float         SprayLocation[MAXPLAYERS + 1][3];
-float         SprayTime[MAXPLAYERS + 1];
-float         TraceDistance;
-float         TraceRate;
-float         vecTempLoc[3];
-float         vectorPos[3];
-Handle        g_cookie;
-Handle        g_adminMenu = INVALID_HANDLE;
-Handle        g_TraceTimer;
+#define PLUGIN_NAME        "Banned Sprays"
+#define PLUGIN_AUTHOR      "TnTSCS aka ClarkKent, X8ETr1x, burlindw"
+#define PLUGIN_URL         "https://github.com/Radioactive-Gaming/sm-ban-player-sprays"
+#define PLUGIN_DESCRIPTION "Delete sprays and ban players from using sprays"
+#define PLUGIN_VERSION     "0.5.3"
 
-public Plugin myinfo =
-    {
-        name        = "Banned Sprays",
-        description = "Permanently remove a player's ability to use sprays",
-        author      = "TnTSCS aka ClarkKent, X8ETr1x, burlindw",
-        version     = PLUGIN_VERSION,
-        url         = "https://github.com/Radioactive-Gaming/sm-ban-player-sprays/"}
+public Plugin myinfo = {
+    name        = PLUGIN_NAME,
+    description = PLUGIN_DESCRIPTION,
+    author      = PLUGIN_AUTHOR,
+    version     = PLUGIN_VERSION,
+    url         = PLUGIN_URL,
+}
 
+bool   AllowSpraysBeforeAuthentication;
+bool   CanViewSprayInfo[MAXPLAYERS + 1];
+bool   Debug;
+bool   lateLoad;
+bool   PlayerCachedCookie[MAXPLAYERS + 1] = {false, ...};
+bool   PlayerCanSpray[MAXPLAYERS + 1]     = {false, ...};
+bool   RemoveSprayOnBan;
+bool   TraceSprays;
+char   g_BanSprayTarget[MAXPLAYERS + 1];
+char   SprayerID[MAXPLAYERS + 1][32];
+char   SprayerName[MAXPLAYERS + 1][MAX_NAME_LENGTH];
+char   TmpLoc[30];
+int    DisplayType;
+int    SprayProtection;
+int    WarnType;
+float  SprayLocation[MAXPLAYERS + 1][3];
+float  SprayTime[MAXPLAYERS + 1];
+float  TraceDistance;
+float  TraceRate;
+float  vecTempLoc[3];
+float  vectorPos[3];
+Handle g_cookie;
+Handle g_adminMenu = INVALID_HANDLE;
+Handle g_TraceTimer;
+
+/**
+ * Called when the plugin is fully initialized and all known external references
+ * are resolved. This is only called once in the lifetime of the plugin, and is
+ * paired with OnPluginEnd().
+ *
+ * If any run-time error is thrown during this callback, the plugin will be
+ * marked as failed.
+ **/
 public void OnPluginStart()
 {
     Handle hRandom;
