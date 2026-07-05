@@ -68,7 +68,7 @@ enum struct Client {
 
 Client g_clients[MAXPLAYERS + 1];
 Handle g_cookie = INVALID_HANDLE;
-Handle regex_steamid64;
+Regex  regex_steamid64;
 
 /**
  * Automatically remove a player's spray when that player's spray is banned.
