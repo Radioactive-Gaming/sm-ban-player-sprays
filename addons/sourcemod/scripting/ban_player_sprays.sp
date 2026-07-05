@@ -50,6 +50,8 @@ Handle g_cookie;
 Handle g_adminMenu = INVALID_HANDLE;
 Handle g_TraceTimer;
 
+Handle regex_steamid64;
+
 /**
  * Automatically remove a player's spray when that player's spray is banned.
  **/
@@ -119,6 +121,14 @@ public void OnPluginStart()
     convar_adminflag_delete = CreateConVar("sm_bannedsprays_adminflag_delete", "c", "Admins with this permission flag may delete sprays");
     convar_occlusion_radius = CreateConVar("sm_bannedsprays_occlusion_radius", "0", "Players may not create sprays within this radius of an existing spray", _, true, 0.0, false, 1000.0);
 
+    // This regular expression may be reused multiple times.
+    regex_steamid64 = CompileRegex("[0-9]{17}");
+    if (regex_steamid64 == INVALID_HANDLE)
+    {
+        LogError("Failed to compile regular expression");
+        SetFailState("Failed to compile regular expression");
+    }
+
     AddTempEntHook("Player Decal", PlayerSpray);
 
     SetCookieMenuItem(Menu_Status, 0, "Display Banned Spray Status");
@@ -167,9 +177,9 @@ public void OnConfigsExecuted()
     if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], flag))
     {
         int bit = FlagToBit(flag);
-        RegAdminCmd("sm_banspray", Command_BanSpray, bit, "Permanently remove a players ability to use spray");
-        RegAdminCmd("sm_unbanspray", Command_UnBanSpray, bit, "Permanently remove a players ability to use spray");
-        RegAdminCmd("sm_banspray_steamid", Command_BanSpraySteamID, bit, "Manually add a SteamID to the list of players who are banned from using sprays");
+        RegAdminCmd("sm_banspray", OnAdminCmdBanSpray, bit, "Permanently remove a players ability to use spray");
+        RegAdminCmd("sm_unbanspray", OnCmdUnbanSpray, bit, "Permanently remove a players ability to use spray");
+        RegAdminCmd("sm_banspray_steamid", OnAdminCmdBanSpraySteamID, bit, "Manually add a SteamID to the list of players who are banned from using sprays");
     }
     else
     {
@@ -186,6 +196,91 @@ public void OnConfigsExecuted()
     {
         LogInvalidConVarValue(convar_adminflag_delete);
     }
+}
+
+/**
+ * Callback for the sm_banspray admin command.
+ **/
+public Action OnAdminCmdBanSpray(int client, int args)
+{
+    if (args < 1)
+    {
+        ReplyToCommand(client, "Usage: sm_banspray <player>");
+        return Plugin_Handled;
+    }
+
+    char target_name[MAX_NAME_LENGTH];
+    target_name[0] = '\0';
+
+    GetCmdArg(1, target_name, sizeof(target_name));
+
+    int target = FindTarget(client, target_name, true, false);
+    if (target > 0)
+    {
+        PerformSprayBan(client, target);
+    }
+
+    return Plugin_Handled;
+}
+
+/**
+ * Callback for the sm_banspray_steamid admin command.
+ **/
+public Action OnAdminCmdBanSpraySteamID(int client, int args)
+{
+    if (args < 2)
+    {
+        ReplyToCommand(client, "Usage: sm_banspray_steamid <SteamID64> <1/0>");
+        return Plugin_Handled;
+    }
+
+    // The first argument must be a SteamID64.
+    char steamid[STEAMID64_LENGTH];
+    GetCmdArg(1, steamid, sizeof(steamid));
+    if (!MatchRegex(regex_steamid64, steamid))
+    {
+        ReplyToCommand(client, "Invalid SteamID '%s': Expected SteamID64", steamid);
+        return Plugin_Handled;
+    }
+
+    // The second argument must be either 0 or 1.
+    char value[3];
+    GetCmdArg(2, value, sizeof(value));
+    if (strcmp(value, "0", false) != 0 && strcmp(value, "1", false) != 0)
+    {
+        ReplyToCommand(client, "Invalid ban status: Expected 0 or 1");
+        return Plugin_Handled;
+    }
+
+    // Set the cookie based on the provided id and log the message.
+    SetAuthIdCookie(steamid, g_cookie, value);
+    ShowActivity2(client, "[Banned Sprays] ", "%t", "Set Spray", steamid, value);
+    LogAction(client, -1, "Set spray ban value for [%s] to %s", steamid, value);
+
+    return Plugin_Handled;
+}
+
+/**
+ * Callback for the sm_unbanspray admin command.
+ **/
+public Action OnCmdUnbanSpray(int client, int args)
+{
+    if (args < 1)
+    {
+        ReplyToCommand(client, "Usage: sm_unbanspray <player>");
+        return Plugin_Handled;
+    }
+
+    char target_name[MAX_NAME_LENGTH];
+    GetCmdArg(1, target_name, sizeof(target_name));
+
+    int target = FindTarget(client, target_name, false, true);
+    if (target > 0)
+    {
+        PerformSprayUnBan(client, target);
+    }
+
+    return Plugin_Handled;
 }
 
 /**
@@ -632,113 +727,6 @@ void StringToVector(char str[LOCATION_MAXLENGTH], float vector[3])
     vector[2] = StringToFloat(t_str[2]);
 
     LogMessage("Converted string [%s] to vector [%f %f %f]", str, vector[0], vector[1], vector[2]);
-}
-
-// ----------------------------------------------
-// --------------- COMMANDS ---------------
-// ----------------------------------------------
-public Action Command_BanSpray(int client, int args)
-{
-    if (args < 1)
-    {
-        ReplyToCommand(client, "[Ban Spray] Usage: sm_banspray <player>");
-        return Plugin_Handled;
-    }
-
-    int  target;
-    char target_name[MAX_NAME_LENGTH];
-    target_name[0] = '\0';
-
-    GetCmdArg(1, target_name, sizeof(target_name));
-
-    if ((target = FindTarget(
-             client,
-             target_name,
-             true,
-             true)) <= 0)
-    {
-        return Plugin_Handled;
-    }
-
-    PerformSprayBan(client, target);
-
-    return Plugin_Handled;
-}
-
-public Action Command_BanSpraySteamID(int client, int args)
-{
-    if (args < 2)
-    {
-        ReplyToCommand(client, "[Ban Spray] Usage: sm_banspray_steamid <SteamID64> <1/0>");
-        return Plugin_Handled;
-    }
-
-    char arg_string[256];
-    char authid[18];
-    char yesno[10];
-
-    GetCmdArgString(arg_string, sizeof(arg_string));
-
-    int len;
-    int total_len;
-
-    // Get SteamID
-    if ((len = BreakString(arg_string, authid, sizeof(authid))) != -1)
-    {
-        total_len += len;
-    }
-
-    // Validate SteamID
-    char   steamid_regex[10] = "[0-9]{17}";
-    Handle steamid_regex_cmp = CompileRegex(steamid_regex, PCRE_CASELESS);
-    if (MatchRegex(steamid_regex_cmp, authid) != 1)
-    {
-        ReplyToCommand(client, "[Ban Spray] Invalid SteamID format, must be in SteamID64 format.");
-        return Plugin_Handled;
-    }
-
-    // Validate on/off
-    if (strcmp(arg_string[total_len], "1", false) == 0 || strcmp(arg_string[total_len], "0", false) == 0)
-    {
-        int value = StringToInt(arg_string[total_len]);
-        value == 1 ? Format(yesno, sizeof(yesno), "banned") : Format(yesno, sizeof(yesno), "unbanned");
-
-        SetAuthIdCookie(authid, g_cookie, arg_string[total_len]);
-
-        ShowActivity2(client, "[Ban Spray] ", "%t", "Set Spray", authid, yesno);
-        LogAction(client, -1, "%L %t", client, "Set Spray", authid, yesno);
-
-        return Plugin_Handled;
-    }
-    else
-    {
-        ReplyToCommand(client, "%t", "Valid Parameters", authid, arg_string[total_len]);
-    }
-
-    return Plugin_Handled;
-}
-
-public Action Command_UnBanSpray(int client, int args)
-{
-    if (args < 1)
-    {
-        ReplyToCommand(client, "[Ban Spray] Usage: sm_unbanspray <player>");
-        return Plugin_Handled;
-    }
-
-    int  target;
-    char target_name[MAX_NAME_LENGTH];
-
-    GetCmdArg(1, target_name, sizeof(target_name));
-
-    if ((target = FindTarget(client, target_name, false, true)) <= 0)
-    {
-        return Plugin_Handled;
-    }
-
-    PerformSprayUnBan(client, target);
-
-    return Plugin_Handled;
 }
 
 public Action Command_DeleteSpray(int client, int args)
