@@ -20,13 +20,6 @@
 #include <sdktools>
 #include <sourcemod>
 
-#define STEAMID64_LENGTH     18
-#define LOCATION_MAXLENGTH   30
-#define COOKIE_IDENTIFIER    "banned-spray"
-#define COOKIE_VALUE_BANNED  "1"
-#define COOKIE_VALUE_ALLOWED "0"
-#define COOKIE_VALUE_LENGTH  3
-
 #define PLUGIN_NAME        "Banned Sprays"
 #define PLUGIN_AUTHOR      "TnTSCS aka ClarkKent, X8ETr1x, burlindw"
 #define PLUGIN_URL         "https://github.com/Radioactive-Gaming/sm-ban-player-sprays"
@@ -39,7 +32,20 @@ public Plugin myinfo = {
     author      = PLUGIN_AUTHOR,
     version     = PLUGIN_VERSION,
     url         = PLUGIN_URL,
-}
+};
+
+/**
+ * Cookies are an empty string by default, this plugin is written so that *any*
+ * value other than this default indicates a ban. It only sets the cookie to
+ * "banned" for clarity when inspecting the database.
+ **/
+#define COOKIE_IDENTIFIER    "banned-spray"
+#define COOKIE_VALUE_ALLOWED ""
+#define COOKIE_VALUE_BANNED  "banned"
+#define COOKIE_VALUE_LENGTH  8
+
+#define STEAMID64_LENGTH   18
+#define LOCATION_MAXLENGTH 30
 
 enum SprayPermission {
     SPRAY_PERMISSION_UNKNOWN,
@@ -105,6 +111,9 @@ Handle convar_adminflag_delete = INVALID_HANDLE;
 Handle convar_occlusion_radius = INVALID_HANDLE;
 float  config_occlusion_radius = 0.0;
 
+Handle convar_assume_banned = INVALID_HANDLE;
+bool   config_assume_banned = false;
+
 /**
  * Called when the plugin is fully initialized and all known external references
  * are resolved. This is only called once in the lifetime of the plugin, and is
@@ -123,6 +132,7 @@ public void OnPluginStart()
     convar_adminflag_ban    = CreateConVar("sm_bannedsprays_adminflag_ban", "d", "Admins with this permission flag may ban players' sprays");
     convar_adminflag_delete = CreateConVar("sm_bannedsprays_adminflag_delete", "c", "Admins with this permission flag may delete sprays");
     convar_occlusion_radius = CreateConVar("sm_bannedsprays_occlusion_radius", "0", "Players may not create sprays within this radius of an existing spray", _, true, 0.0, false, 1000.0);
+    convar_assume_banned    = CreateConVar("sm_bannedsprays_assume_banned", "0", "Assume clients are banned while waiting for the database to load their status");
 
     // This regular expression may be reused multiple times.
     regex_steamid64 = CompileRegex("[0-9]{17}");
@@ -160,6 +170,7 @@ public void OnConfigsExecuted()
     config_autoremove       = GetConVarBool(convar_autoremove);
     config_tracing_dist     = GetConVarFloat(convar_tracing_dist);
     config_occlusion_radius = GetConVarFloat(convar_occlusion_radius);
+    config_assume_banned    = GetConVarBool(convar_assume_banned);
 
     // There is no vector primitive for console variables. We must parse it ourselves.
     GetConVarString(convar_delete_loc, buffer, sizeof(buffer));
@@ -212,17 +223,14 @@ public void OnClientCookiesCached(int client)
     char value[COOKIE_VALUE_LENGTH];
     GetClientCookie(client, g_cookie, value, sizeof(value));
 
+    // Any value other than the allowed string indicates a ban.
     if (StrEqual(value, COOKIE_VALUE_ALLOWED, false))
     {
         g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
     }
-    else if (StrEqual(value, COOKIE_VALUE_BANNED, false))
-    {
-        g_clients[client].permission = SPRAY_PERMISSION_BANNED;
-    }
     else
     {
-        g_clients[client].permission = SPRAY_PERMISSION_UNKNOWN;
+        g_clients[client].permission = SPRAY_PERMISSION_BANNED;
     }
 }
 
@@ -507,36 +515,7 @@ bool IsClientBanned(int client)
     {
         case SPRAY_PERMISSION_UNKNOWN:
         {
-            if (AreClientCookiesCached(client))
-            {
-                char value[COOKIE_VALUE_LENGTH];
-                GetClientCookie(client, g_cookie, value, sizeof(value));
-
-                if (StrEqual(value, COOKIE_VALUE_ALLOWED, false))
-                {
-                    g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
-                    return false;
-                }
-                else if (StrEqual(value, COOKIE_VALUE_BANNED, false))
-                {
-                    g_clients[client].permission = SPRAY_PERMISSION_BANNED;
-                    return true;
-                }
-                else
-                {
-                    // Attempt to correct any cookies that get in an invalid state.
-                    SetClientCookie(client, g_cookie, COOKIE_VALUE_ALLOWED);
-                    g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
-                    return true;
-                }
-            }
-            else
-            {
-                // If the server hasn't recieved the client's cookies from the
-                // database, we assume that they are banned until proven
-                // otherwise.
-                return false;
-            }
+            return config_assume_banned;
         }
 
         case SPRAY_PERMISSION_ALLOWED:
@@ -550,9 +529,9 @@ bool IsClientBanned(int client)
         }
     }
 
-    // This should be impossible, but the compiler complains otherwise.
-    LogError("Invalid client permission");
-    return true;
+    LogError("Invalid client permission '%d'", view_as<int>(g_clients[client].permission));
+    SetFailState("Invalid client permission '%d'", view_as<int>(g_clients[client].permission));
+    return false; // unreachable
 }
 
 bool IsValidClient(int client)
