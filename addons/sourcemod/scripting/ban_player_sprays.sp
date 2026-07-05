@@ -270,7 +270,7 @@ public Action OnCmdBanSpraySteamID(int admin, int args)
 {
     if (args < 2)
     {
-        ReplyToCommand(admin, "Usage: sm_banspray_steamid <SteamID64> <%s/%s>", COOKIE_VALUE_BANNED, COOKIE_VALUE_ALLOWED);
+        ReplyToCommand(admin, "Usage: sm_banspray_steamid <SteamID64> <allowed | banned>");
         return Plugin_Handled;
     }
 
@@ -284,19 +284,24 @@ public Action OnCmdBanSpraySteamID(int admin, int args)
     }
 
     // The second argument indicates whether they are banned or allowed.
-    char value[COOKIE_VALUE_LENGTH];
+    char value[9];
     GetCmdArg(2, value, sizeof(value));
-    if (!StrEqual(value, COOKIE_VALUE_BANNED, false) && !StrEqual(value, COOKIE_VALUE_ALLOWED, false))
+
+    if (StrEqual(value, "banned", false))
     {
-        ReplyToCommand(admin, "Invalid ban status: Expected %s or %s", COOKIE_VALUE_BANNED, COOKIE_VALUE_ALLOWED);
+        SetAuthIdCookie(steamid, g_cookie, COOKIE_VALUE_BANNED);
+    }
+    else if (StrEqual(value, "allowed", false))
+    {
+        SetAuthIdCookie(steamid, g_cookie, COOKIE_VALUE_ALLOWED);
+    }
+    else
+    {
+        ReplyToCommand(admin, "Invalid ban status: Expected allowed or banned");
         return Plugin_Handled;
     }
 
-    // Set the cookie based on the provided id and log the message.
-    SetAuthIdCookie(steamid, g_cookie, value);
-    ShowActivity2(admin, "[Banned Sprays] ", "%t", "Set Spray", steamid, value);
     LogAction(admin, -1, "Set spray ban value for [%s] to %s", steamid, value);
-
     return Plugin_Handled;
 }
 
