@@ -20,8 +20,12 @@
 #include <sdktools>
 #include <sourcemod>
 
-#define STEAMID64_LENGTH   18
-#define LOCATION_MAXLENGTH 30
+#define STEAMID64_LENGTH     18
+#define LOCATION_MAXLENGTH   30
+#define COOKIE_IDENTIFIER    "banned-spray"
+#define COOKIE_VALUE_BANNED  "1"
+#define COOKIE_VALUE_ALLOWED "0"
+#define COOKIE_VALUE_LENGTH  3
 
 #define PLUGIN_NAME        "Banned Sprays"
 #define PLUGIN_AUTHOR      "TnTSCS aka ClarkKent, X8ETr1x, burlindw"
@@ -37,20 +41,27 @@ public Plugin myinfo = {
     url         = PLUGIN_URL,
 }
 
-bool   CanViewSprayInfo[MAXPLAYERS + 1];
-bool   PlayerCachedCookie[MAXPLAYERS + 1] = {false, ...};
-bool   PlayerCanSpray[MAXPLAYERS + 1]     = {false, ...};
-char   g_BanSprayTarget[MAXPLAYERS + 1];
-char   SprayerID[MAXPLAYERS + 1][32];
-char   SprayerName[MAXPLAYERS + 1][MAX_NAME_LENGTH];
-float  SprayLocation[MAXPLAYERS + 1][3];
-float  SprayTime[MAXPLAYERS + 1];
-float  vectorPos[3];
-Handle g_cookie;
-Handle g_adminMenu = INVALID_HANDLE;
-Handle g_TraceTimer;
+enum SprayPermission {
+    SPRAY_PERMISSION_UNKNOWN,
+    SPRAY_PERMISSION_BANNED,
+    SPRAY_PERMISSION_ALLOWED,
+}
 
+enum struct Client {
+    // clang-format off
+    SprayPermission permission;
+    float           location[3];
+    float           timestamp;
+    // clang-format on
+}
+
+Client g_clients[MAXPLAYERS + 1];
+Handle g_cookie;
 Handle regex_steamid64;
+
+// TODO: Clean these up
+char   g_BanSprayTarget[MAXPLAYERS + 1];
+Handle g_adminMenu = INVALID_HANDLE;
 
 /**
  * Automatically remove a player's spray when that player's spray is banned.
@@ -69,15 +80,8 @@ Handle convar_delete_loc    = INVALID_HANDLE;
 float  config_delete_loc[3] = {0.0, 0.0, 0.0};
 
 /**
- * The frequency (in seconds) to raycast for sprays under the client's
- * crosshair. Setting this to zero disables raycasting.
- **/
-Handle convar_tracing_freq = INVALID_HANDLE;
-float  config_tracing_freq = 3.0;
-
-/**
- * The distance (in hammer units) to raycast for sprays under the client's
- * crosshair. Setting this to zero disables raycasting.
+ * Sprays within this distance (in hammer units) are included in during
+ * raycasts.
  **/
 Handle convar_tracing_dist = INVALID_HANDLE;
 float  config_tracing_dist = 25.0;
@@ -115,8 +119,7 @@ public void OnPluginStart()
 
     convar_autoremove       = CreateConVar("sm_bannedsprays_autoremove", "1", "Automatically remove a player's spray from the map when their spray is banned");
     convar_delete_loc       = CreateConVar("sm_bannedsprays_delete_loc", "0.00 0.00 0.00", "Deleted sprays are moved to this location on the map");
-    convar_tracing_freq     = CreateConVar("sm_bannedsprays_tracing_freq", "3.0", "The frequency to raycast for sprays", _, true, 0.0);
-    convar_tracing_dist     = CreateConVar("sm_bannedsprays_tracing_dist", "25", "The distance to raycast for sprays", _, true, 0.0, true, 250.0);
+    convar_tracing_dist     = CreateConVar("sm_bannedsprays_tracing_dist", "25", "The distance to include sprays during a raycast", _, true, 0.0, true, 250.0);
     convar_adminflag_ban    = CreateConVar("sm_bannedsprays_adminflag_ban", "d", "Admins with this permission flag may ban players' sprays");
     convar_adminflag_delete = CreateConVar("sm_bannedsprays_adminflag_delete", "c", "Admins with this permission flag may delete sprays");
     convar_occlusion_radius = CreateConVar("sm_bannedsprays_occlusion_radius", "0", "Players may not create sprays within this radius of an existing spray", _, true, 0.0, false, 1000.0);
@@ -129,24 +132,16 @@ public void OnPluginStart()
         SetFailState("Failed to compile regular expression");
     }
 
-    AddTempEntHook("Player Decal", PlayerSpray);
+    AddTempEntHook("Player Decal", OnTempEntPlayerDecal);
 
     SetCookieMenuItem(Menu_Status, 0, "Display Banned Spray Status");
 
-    g_cookie = RegClientCookie("banned-spray", "Banned spray status", CookieAccess_Protected);
+    g_cookie = RegClientCookie(COOKIE_IDENTIFIER, "Banned spray status", CookieAccess_Protected);
 
     LoadTranslations("common.phrases");
     LoadTranslations("ban_player_sprays.phrases");
 
     AutoExecConfig(true, "plugin.ban_player_sprays");
-
-    for (int i = 1; i <= MaxClients; i++)
-    {
-        if (IsClientInGame(i))
-        {
-            OnClientPostAdminCheck(i);
-        }
-    }
 }
 
 /**
@@ -163,7 +158,6 @@ public void OnConfigsExecuted()
 
     // Simple configuration variables.
     config_autoremove       = GetConVarBool(convar_autoremove);
-    config_tracing_freq     = GetConVarFloat(convar_tracing_freq);
     config_tracing_dist     = GetConVarFloat(convar_tracing_dist);
     config_occlusion_radius = GetConVarFloat(convar_occlusion_radius);
 
@@ -177,8 +171,8 @@ public void OnConfigsExecuted()
     if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], flag))
     {
         int bit = FlagToBit(flag);
-        RegAdminCmd("sm_banspray", OnAdminCmdBanSpray, bit, "Permanently remove a players ability to use spray");
-        RegAdminCmd("sm_unbanspray", OnCmdUnbanSpray, bit, "Permanently remove a players ability to use spray");
+        RegAdminCmd("sm_banspray", OnAdminCmdBanSpray, bit, "Remove a player's ability to use sprays");
+        RegAdminCmd("sm_unbanspray", OnCmdUnbanSpray, bit, "Restore a player's ability to use sprays");
         RegAdminCmd("sm_banspray_steamid", OnAdminCmdBanSpraySteamID, bit, "Manually add a SteamID to the list of players who are banned from using sprays");
     }
     else
@@ -190,22 +184,61 @@ public void OnConfigsExecuted()
     if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], flag))
     {
         int bit = FlagToBit(flag);
-        RegAdminCmd("sm_deletespray", Command_DeleteSpray, bit, "Remove a player's spray by either looking at it or providing a player's name");
+        RegAdminCmd("sm_deletespray", OnCmdDeleteSpray, bit, "Remove a player's spray by either looking at it or providing a player's name");
     }
     else
     {
         LogInvalidConVarValue(convar_adminflag_delete);
     }
+
+    AddCommandListener(OnUserCmdSpray, "say");
+    AddCommandListener(OnUserCmdSpray, "say_team");
+}
+
+public void OnClientPostAdminCheck(int client)
+{
+    g_clients[client].location[0] = config_delete_loc[0];
+    g_clients[client].location[1] = config_delete_loc[1];
+    g_clients[client].location[2] = config_delete_loc[2];
+
+    if (!AreClientCookiesCached(client))
+    {
+        g_clients[client].permission = SPRAY_PERMISSION_UNKNOWN;
+    }
+}
+
+public void OnClientCookiesCached(int client)
+{
+    char value[COOKIE_VALUE_LENGTH];
+    GetClientCookie(client, g_cookie, value, sizeof(value));
+
+    if (StrEqual(value, COOKIE_VALUE_ALLOWED, false))
+    {
+        g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
+    }
+    else if (StrEqual(value, COOKIE_VALUE_BANNED, false))
+    {
+        g_clients[client].permission = SPRAY_PERMISSION_BANNED;
+    }
+    else
+    {
+        g_clients[client].permission = SPRAY_PERMISSION_UNKNOWN;
+    }
+}
+
+public void OnClientDisconnect(int client)
+{
+    DeleteSpray(0, client);
 }
 
 /**
  * Callback for the sm_banspray admin command.
  **/
-public Action OnAdminCmdBanSpray(int client, int args)
+public Action OnAdminCmdBanSpray(int admin, int args)
 {
     if (args < 1)
     {
-        ReplyToCommand(client, "Usage: sm_banspray <player>");
+        ReplyToCommand(admin, "Usage: sm_banspray <player>");
         return Plugin_Handled;
     }
 
@@ -214,10 +247,10 @@ public Action OnAdminCmdBanSpray(int client, int args)
 
     GetCmdArg(1, target_name, sizeof(target_name));
 
-    int target = FindTarget(client, target_name, true, false);
+    int target = FindTarget(admin, target_name, true, false);
     if (target > 0)
     {
-        PerformSprayBan(client, target);
+        BanSpray(admin, target);
     }
 
     return Plugin_Handled;
@@ -226,11 +259,11 @@ public Action OnAdminCmdBanSpray(int client, int args)
 /**
  * Callback for the sm_banspray_steamid admin command.
  **/
-public Action OnAdminCmdBanSpraySteamID(int client, int args)
+public Action OnAdminCmdBanSpraySteamID(int admin, int args)
 {
     if (args < 2)
     {
-        ReplyToCommand(client, "Usage: sm_banspray_steamid <SteamID64> <1/0>");
+        ReplyToCommand(admin, "Usage: sm_banspray_steamid <SteamID64> <%s/%s>", COOKIE_VALUE_BANNED, COOKIE_VALUE_ALLOWED);
         return Plugin_Handled;
     }
 
@@ -239,23 +272,23 @@ public Action OnAdminCmdBanSpraySteamID(int client, int args)
     GetCmdArg(1, steamid, sizeof(steamid));
     if (!MatchRegex(regex_steamid64, steamid))
     {
-        ReplyToCommand(client, "Invalid SteamID '%s': Expected SteamID64", steamid);
+        ReplyToCommand(admin, "Invalid SteamID '%s': Expected SteamID64", steamid);
         return Plugin_Handled;
     }
 
-    // The second argument must be either 0 or 1.
-    char value[3];
+    // The second argument indicates whether they are banned or allowed.
+    char value[COOKIE_VALUE_LENGTH];
     GetCmdArg(2, value, sizeof(value));
-    if (strcmp(value, "0", false) != 0 && strcmp(value, "1", false) != 0)
+    if (!StrEqual(value, COOKIE_VALUE_BANNED, false) && !StrEqual(value, COOKIE_VALUE_ALLOWED, false))
     {
-        ReplyToCommand(client, "Invalid ban status: Expected 0 or 1");
+        ReplyToCommand(admin, "Invalid ban status: Expected %s or %s", COOKIE_VALUE_BANNED, COOKIE_VALUE_ALLOWED);
         return Plugin_Handled;
     }
 
     // Set the cookie based on the provided id and log the message.
     SetAuthIdCookie(steamid, g_cookie, value);
-    ShowActivity2(client, "[Banned Sprays] ", "%t", "Set Spray", steamid, value);
-    LogAction(client, -1, "Set spray ban value for [%s] to %s", steamid, value);
+    ShowActivity2(admin, "[Banned Sprays] ", "%t", "Set Spray", steamid, value);
+    LogAction(admin, -1, "Set spray ban value for [%s] to %s", steamid, value);
 
     return Plugin_Handled;
 }
@@ -263,98 +296,268 @@ public Action OnAdminCmdBanSpraySteamID(int client, int args)
 /**
  * Callback for the sm_unbanspray admin command.
  **/
-public Action OnCmdUnbanSpray(int client, int args)
+public Action OnCmdUnbanSpray(int admin, int args)
 {
     if (args < 1)
     {
-        ReplyToCommand(client, "Usage: sm_unbanspray <player>");
+        ReplyToCommand(admin, "Usage: sm_unbanspray <player>");
         return Plugin_Handled;
     }
 
     char target_name[MAX_NAME_LENGTH];
     GetCmdArg(1, target_name, sizeof(target_name));
 
-    int target = FindTarget(client, target_name, false, true);
-    if (target > 0)
+    int target = FindTarget(admin, target_name, false, true);
+    if (IsValidClient(target))
     {
-        PerformSprayUnBan(client, target);
+        UnbanSpray(admin, target);
     }
 
     return Plugin_Handled;
 }
 
-/**
- * Called once a client is authorized and fully in-game, and
- * after all post-connection authorizations have been performed.
- *
- * This callback is gauranteed to occur on all clients, and always
- * after each OnClientPutInServer() call.
- *
- * @param client		Client index.
- * @noreturn
- */
-public void OnClientPostAdminCheck(int client)
+public Action OnCmdDeleteSpray(int admin, int args)
 {
-    if (!IsFakeClient(client))
+    switch (args)
     {
-        ResetVariables(client);
-
-        if (AreClientCookiesCached(client))
+        // If no argument is provided, this does a raycast to remove the
+        // spray(s) under the admin's crosshair.
+        case 0:
         {
-            ProcessCookies(client);
-        }
-        else
-        {
-            CreateTimer(2.0, Timer_Cookies, GetClientSerial(client), TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+            int client;
+            if (GetTargetedSpray(admin, client))
+            {
+                DeleteSpray(admin, client);
+            }
         }
 
-        CanViewSprayInfo[client] = CheckCommandAccess(client, "AllowSprayTrace", ADMFLAG_GENERIC);
+        // If an argument is provided, it is resolved as a player and that
+        // player's spray is deleted.
+        case 1:
+        {
+            char name[MAX_NAME_LENGTH];
+            GetCmdArg(1, name, sizeof(name));
+
+            int client = FindTarget(admin, name, false, true);
+            if (IsValidClient(client))
+            {
+                DeleteSpray(admin, client);
+            }
+        }
+
+        default:
+        {
+            // TODO: Translation
+            ReplyToCommand(admin, "Usage: sm_deletespray <player>?");
+        }
     }
+
+    return Plugin_Handled;
 }
 
-/**
- * Called when a client is disconnecting from the server.
- *
- * @param client		Client index.
- * @noreturn
- */
-public void OnClientDisconnect(int client)
+public Action OnUserCmdSpray(int client, const char[] command, int argc)
 {
-    if (IsClientConnected(client) && !IsFakeClient(client))
+    if (argc < 1 || !IsValidClient(client))
     {
-        ResetVariables(client);
+        return Plugin_Continue;
     }
-}
 
-/**
- * Called when the map is loaded.
- *
- * @note This used to be OnServerLoad(), which is now deprecated.
- * Plugins still using the old forward will work.
- */
-public void OnMapStart()
-{
-    if (IsTracingEnabled())
+    // The argument passed to the say command must be "!spray" exactly.
+    char message[10];
+    GetCmdArg(1, message, sizeof(message));
+    if (!StrEqual(message, "!spray"))
     {
-        ClearTimer(g_TraceTimer);
-
-        g_TraceTimer = CreateTimer(config_tracing_freq, TraceAllSprays, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+        return Plugin_Continue;
     }
+
+    DisplaySpray(client);
+    return Plugin_Stop;
 }
 
 /**
- * Called right before a map ends.
- */
-public void OnMapEnd()
+ * Intercept a player trying to spray a decal.
+ *
+ * This is almost completely undocumented but admins with RCON access can
+ * generate a list of the Temp Entities and their properties with the following
+ * RCON command. This creates a `teprops.txt` file in the mod directory (`tf`).
+ *
+ * ```
+ * sm_dump_teprops teprops.txt
+ * ```
+ *
+ * The Player Decal TE has the following properties:
+ * - `m_vecOrigin` is a vector of three floats and holds spray's location.
+ * - `m_nPlayer` is an int and holds the client id.
+ * - `m_nEntity` is an unused int.
+ **/
+public Action OnTempEntPlayerDecal(const char[] te_name, const int[] Players, int numClients, float delay)
 {
-    ResetVariables(0);
+    int client = TE_ReadNum("m_nPlayer");
+    if (!IsValidClient(client))
+    {
+        LogMessage("Invalid client index in Player Decal TE");
+        return Plugin_Continue;
+    }
 
-    ClearTimer(g_TraceTimer);
+    if (IsClientBanned(client))
+    {
+        // TODO: Translation
+        PrintHintText(client, "You have been banned from using sprays");
+        return Plugin_Handled;
+    }
+
+    float location[3];
+    TE_ReadVector("m_vecOrigin", location);
+
+    if (config_occlusion_radius > 0)
+    {
+        for (int other = 1; other <= MaxClients; other++)
+        {
+            if (other == client || !IsClientInGame(other))
+            {
+                continue;
+            }
+
+            float distance = GetVectorDistance(location, g_clients[other].location);
+            if (distance <= config_occlusion_radius)
+            {
+                // TODO: Translation
+                PrintHintText(client, "You are too close to another spray");
+                return Plugin_Handled;
+            }
+        }
+    }
+
+    g_clients[client].location[0] = location[0];
+    g_clients[client].location[1] = location[1];
+    g_clients[client].location[2] = location[2];
+    g_clients[client].timestamp   = GetGameTime();
+    return Plugin_Continue;
 }
 
-bool IsTracingEnabled()
+void DeleteSpray(int admin, int client)
 {
-    return config_tracing_dist != 0 && config_tracing_freq != 0;
+    TE_Start("Player Decal");
+    TE_WriteVector("m_vecOrigin", config_delete_loc);
+    TE_WriteNum("m_nEntity", 0);
+    TE_WriteNum("m_nPlayer", client);
+    TE_SendToAll();
+
+    // The server needs to delete sprays when people leave to ensure that people
+    // can spray something against server rules and leave before an admin
+    // notices. The automatic removal does not warrant notication or logging.
+    if (admin != 0)
+    {
+        // TODO: Translation
+        ShowActivity2(admin, "[Banned Sprays] ", "deleted the spray for %N", client);
+        LogAction(admin, client, "%L deleted the spray for %L", admin, client);
+    }
+}
+
+void BanSpray(int admin, int client)
+{
+    if (config_autoremove)
+    {
+        DeleteSpray(admin, client);
+    }
+
+    g_clients[client].permission = SPRAY_PERMISSION_BANNED;
+    SetClientCookie(client, g_cookie, COOKIE_VALUE_BANNED);
+
+    // TODO: Translation
+    ShowActivity2(admin, "[Banned Sprays] ", "banned sprays for %N", client);
+    LogAction(admin, client, "%L banned sprays for %L", admin, client);
+}
+
+void UnbanSpray(int admin, int client)
+{
+    g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
+    SetClientCookie(client, g_cookie, COOKIE_VALUE_ALLOWED);
+
+    // TODO: Translation
+    ShowActivity2(admin, "[Banned Sprays] ", "unbanned sprays for %N", client);
+    LogAction(admin, client, "%L unbanned sprays for %L", admin, client);
+}
+
+void DisplaySpray(int client)
+{
+    int target;
+    if (GetTargetedSpray(client, target))
+    {
+        char name[MAX_NAME_LENGTH];
+        if (!GetClientName(target, name, sizeof(name)))
+        {
+            Format(name, sizeof(name), "UNKNOWN");
+        }
+
+        char steamid[STEAMID64_LENGTH];
+        if (!GetClientAuthId(target, AuthId_SteamID64, steamid, sizeof(steamid)))
+        {
+            Format(name, sizeof(name), "UNKNOWN");
+        }
+
+        float duration = GetGameTime() - g_clients[target].timestamp;
+        PrintHintText(client, "%t", "Sprayed By hint", name, steamid, duration);
+    }
+}
+
+bool IsClientBanned(int client)
+{
+    switch (g_clients[client].permission)
+    {
+        case SPRAY_PERMISSION_UNKNOWN:
+        {
+            if (AreClientCookiesCached(client))
+            {
+                char value[COOKIE_VALUE_LENGTH];
+                GetClientCookie(client, g_cookie, value, sizeof(value));
+
+                if (StrEqual(value, COOKIE_VALUE_ALLOWED, false))
+                {
+                    g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
+                    return false;
+                }
+                else if (StrEqual(value, COOKIE_VALUE_BANNED, false))
+                {
+                    g_clients[client].permission = SPRAY_PERMISSION_BANNED;
+                    return true;
+                }
+                else
+                {
+                    // Attempt to correct any cookies that get in an invalid state.
+                    SetClientCookie(client, g_cookie, COOKIE_VALUE_ALLOWED);
+                    g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
+                    return true;
+                }
+            }
+            else
+            {
+                // If the server hasn't recieved the client's cookies from the
+                // database, we assume that they are banned until proven
+                // otherwise.
+                return false;
+            }
+        }
+
+        case SPRAY_PERMISSION_ALLOWED:
+        {
+            return false;
+        }
+
+        case SPRAY_PERMISSION_BANNED:
+        {
+            return true;
+        }
+    }
+
+    // This should be impossible, but the compiler complains otherwise.
+    LogError("Invalid client permission");
+    return true;
+}
+
+bool IsValidClient(int client)
+{
+    return 0 < client && client <= MaxClients && IsClientInGame(client);
 }
 
 void LogInvalidConVarValue(Handle convar)
@@ -367,342 +570,6 @@ void LogInvalidConVarValue(Handle convar)
 
     LogError("Invalid value '%s' for console variable '%s'", name, value);
     SetFailState("Invalid value '%s' for console variable '%s'", name, value);
-}
-
-/**
- * Timer callback for handling cookies
- * @param	timer	Handle to the timer
- * @param serial	Client serial passed through the timer
- */
-public Action Timer_Cookies(Handle timer, int serial)
-{
-    int client = GetClientFromSerial(serial);
-
-    if (client == 0)
-    {
-        return Plugin_Stop;
-    }
-
-    if (AreClientCookiesCached(client))
-    {
-        ProcessCookies(client);
-        return Plugin_Stop;
-    }
-
-    return Plugin_Continue;
-}
-
-/**
- * Process client cookies
- * @param	client	ClientID of player
- * @noreturn
- */
-
-public void ProcessCookies(int client)
-{
-    PlayerCachedCookie[client] = true;
-    PlayerCanSpray[client]     = true;
-
-    if (PlayerSprayIsBanned(client))
-    {
-        LogMessage("%t", "Ban Added", client);
-
-        PerformSprayBan(0, client);
-    }
-}
-
-/**
- * Function to handle all spray bans
- * @param	admin	ClientID of admin cuasing the banning of the player's spray (0 for console)
- * @param	client	ClientID of player having their sprays banned
- * @noreturn
- */
-public void PerformSprayBan(int admin, int client)
-{
-    if (config_autoremove)
-    {
-        SprayDecal(client, 0, config_delete_loc);
-    }
-
-    PlayerCanSpray[client] = false;
-    SetClientCookie(client, g_cookie, "1");
-
-    ShowActivity2(admin, "[Banned Sprays] ", "%t", "Banned Spray", client);
-    LogAction(admin, client, "%N banned the sprays for %L", admin, client);
-}
-
-/**
- * Function to handle all spray unbans
- * @param	admin	ClientID of admin cuasing the unbanning of the player's spray (0 for console)
- * @param	client	ClientID of player having their sprays unbanned
- * @noreturn
- */
-public void PerformSprayUnBan(int admin, int client)
-{
-    PlayerCanSpray[client] = true;
-
-    SetClientCookie(client, g_cookie, "0");
-
-    ShowActivity2(admin, "[Banned Sprays] ", "%t", "Unbanned Spray", client);
-    LogAction(admin, client, "%N unbanned the sprays for %L", admin, client);
-}
-
-/**
- * Check if a player's spray ability is banned or not
- * @param	client	ClientID of player to check
- * @return True if player's ability to use sprays is banned, false otherwise
- */
-bool PlayerSprayIsBanned(int client)
-{
-    char cookie[2];
-
-    GetClientCookie(client, g_cookie, cookie, sizeof(cookie));
-
-    if (StrEqual(cookie, "1", false))
-    {
-        return true;
-    }
-
-    return false;
-}
-
-public Action PlayerSpray(const char[] te_name, const int[] Players, int numClients, float delay)
-{
-    int client = TE_ReadNum("m_nPlayer");
-
-    if (IsClientInGame(client))
-    {
-        LogMessage("%N is attempting to spray...", client);
-
-        TE_ReadVector("m_vecOrigin", SprayLocation[client]);
-
-        if (config_occlusion_radius > 0)
-        {
-            for (int i = 1; i <= MaxClients; i++)
-            {
-                if (i == client || !IsClientInGame(i))
-                {
-                    continue;
-                }
-
-                PrintToChatAll("Spray Location for %N: %f %f %f", client, SprayLocation[client][0], SprayLocation[client][1], SprayLocation[client][2]);
-                PrintToChatAll("Spray Location for %N: %f %f %f", i, SprayLocation[i][0], SprayLocation[i][1], SprayLocation[i][2]);
-
-                bool cantspray = false;
-
-                if (SprayLocation[client][0] == SprayLocation[i][0] ||
-                    SprayLocation[client][1] == SprayLocation[i][1] ||
-                    SprayLocation[client][2] == SprayLocation[i][2])
-                { // The client's spray is on the same wall as the i's spray, let's check the distance
-                    if (GetVectorDistance(SprayLocation[client], SprayLocation[i]) <= config_occlusion_radius)
-                    { // The client's spray is too close to the i's spray, disallow it.
-                        cantspray = true;
-                    }
-                }
-                else
-                { // Not the same perpendicular wall, might be on angle wall, let's check distance
-                    if (GetVectorDistance(SprayLocation[client], SprayLocation[i]) <= config_occlusion_radius)
-                    { // The client's spray is too close to the i's spray, disallow it.
-                        cantspray = true;
-                    }
-                }
-
-                if (cantspray)
-                {
-                    PrintHintText(client, "%t", "Spray On Spray Hint", i);
-
-                    return Plugin_Handled;
-                }
-            }
-        }
-
-        SprayTime[client] = GetGameTime();
-
-        if (!GetClientName(client, SprayerName[client], sizeof(SprayerName[])))
-        {
-            Format(SprayerName[client], sizeof(SprayerName[]), "Unk Name");
-        }
-
-        if (!GetClientAuthId(client, AuthId_SteamID64, SprayerID[client], sizeof(SprayerID[])))
-        {
-            Format(SprayerID[client], sizeof(SprayerID[]), "Unk SteamID");
-        }
-
-        float vec[3];
-        GetVectorAngles(SprayLocation[client], vec);
-        PrintToChatAll("Spray Location: %f %f %f", SprayLocation[client][0], SprayLocation[client][1], SprayLocation[client][2]);
-        PrintToChatAll("Vector Angle is: %f %f %f", vec[0], vec[1], vec[2]);
-        LogMessage("%N's spray info:", client);
-        LogMessage("Spray Location: %.2f %.2f %.2f", SprayLocation[client][0], SprayLocation[client][1], SprayLocation[client][2]);
-        LogMessage("Spray Time [%.2f] - Sprayer Name [%s] - SprayerID [%s]", SprayTime[client], SprayerName[client], SprayerID[client]);
-
-        if (!PlayerCachedCookie[client])
-        {
-            LogMessage("%N's cookies are not cached yet", client);
-
-            CPrintToChat(client, "{green}[{red}Banned Sprays{green}] %t", "Checking Permissions");
-            return Plugin_Handled;
-        }
-
-        if (!PlayerCanSpray[client])
-        {
-            CPrintToChat(client, "{red}[{green}Banned Sprays{red}] %t", "Cant Spray");
-            return Plugin_Handled;
-        }
-    }
-
-    return Plugin_Continue;
-}
-
-/**
- * Used to cause the spraying of a player's decal
- * @param	client	ClientID of player who is having their decal sprayed
- * @param	entIndex	Usually 0
- * @param	vecPos	Vector position to spray the decal
- * @noreturn
- */
-public void SprayDecal(int client, int entIndex, float vecPos[3])
-{
-    if (!IsValidClient(client))
-    {
-        LogMessage("Client (%i) is not a valid client, cannot remove spray.", client);
-
-        return;
-    }
-
-    TE_Start("Player Decal");
-    TE_WriteVector("m_vecOrigin", vecPos);
-    TE_WriteNum("m_nEntity", entIndex);
-    TE_WriteNum("m_nPlayer", client);
-    TE_SendToAll();
-}
-
-// ------------------------------------------------------------------------------------------
-// --- Thanks to author(s) of Spray Tracer for the following four pieces of code ---
-// ------------------------------------------------------------------------------------------
-public Action TraceAllSprays(Handle timer)
-{
-    vectorPos[0] = 0.0;
-    vectorPos[1] = 0.0;
-    vectorPos[2] = 0.0;
-
-    for (int i = 1; i <= MaxClients; i++)
-    {
-        if (!IsClientInGame(i) || !CanViewSprayInfo[i] || IsFakeClient(i))
-        {
-            continue;
-        }
-
-        if (GetPlayerAimPosition(i, vectorPos))
-        {
-            for (int a = 1; a <= MaxClients; a++)
-            {
-                if (!IsClientInGame(a) || IsFakeClient(a))
-                {
-                    continue;
-                }
-
-                if (GetVectorDistance(vectorPos, SprayLocation[a]) <= config_tracing_dist)
-                {
-                    PrintHintText(i, "%t", "Sprayed By hint", SprayerName[a], SprayerID[a], (GetGameTime() - SprayTime[a]));
-                }
-            }
-        }
-    }
-
-    return Plugin_Handled;
-}
-
-/**
- * @param		client		Player's ClientID
- * @param		vecPos	Vector Position player is aiming at
- *
- * @return			True if player aim vector is found, false otherwise
- */
-public bool GetPlayerAimPosition(int client, float vecPos[3])
-{
-    if (!IsClientInGame(client))
-    {
-        return false;
-    }
-
-    float vecAngles[3];
-    float vecOrigin[3];
-
-    GetClientEyePosition(client, vecOrigin);
-    GetClientEyeAngles(client, vecAngles);
-
-    Handle hTrace = TR_TraceRayFilterEx(vecOrigin, vecAngles, MASK_SHOT, RayType_Infinite, TraceEntityFilterPlayer);
-
-    if (TR_DidHit(hTrace))
-    {
-        TR_GetEndPosition(vecPos, hTrace);
-        CloseHandle(hTrace);
-        return true;
-    }
-
-    CloseHandle(hTrace);
-    return false;
-}
-
-public bool TraceEntityFilterPlayer(int entity, int contentsMask)
-{
-    return entity > MaxClients;
-}
-
-bool IsValidClient(int client)
-{
-    if (client <= 0 || client > MaxClients)
-    {
-        return false;
-    }
-
-    return IsClientInGame(client);
-}
-
-/**
- * Function to clear/kill the timer and set to INVALID_HANDLE if it's still active
- *
- * @param	timer		Handle of the timer
- * @noreturn
- */
-public void ClearTimer(Handle timer)
-{
-    if (timer != INVALID_HANDLE)
-    {
-        KillTimer(timer);
-        timer = INVALID_HANDLE;
-    }
-}
-
-public void ResetVariables(int client)
-{
-    if (client == 0)
-    {
-        for (int i = 1; i <= MaxClients; i++)
-        {
-            if (IsClientInGame(i))
-            {
-                SprayerID[i][0]     = '\0';
-                SprayerName[i][0]   = '\0';
-                SprayLocation[i][0] = 0.0;
-                SprayLocation[i][1] = 0.0;
-                SprayLocation[i][2] = 0.0;
-                SprayTime[i]        = 0.0;
-            }
-        }
-
-        return;
-    }
-
-    SprayerID[client][0]       = '\0';
-    SprayerName[client][0]     = '\0';
-    SprayLocation[client][0]   = 0.0;
-    SprayLocation[client][1]   = 0.0;
-    SprayLocation[client][2]   = 0.0;
-    SprayTime[client]          = 0.0;
-    PlayerCachedCookie[client] = false;
-    PlayerCanSpray[client]     = false;
 }
 
 /**
@@ -725,61 +592,68 @@ void StringToVector(char str[LOCATION_MAXLENGTH], float vector[3])
     vector[0] = StringToFloat(t_str[0]);
     vector[1] = StringToFloat(t_str[1]);
     vector[2] = StringToFloat(t_str[2]);
-
-    LogMessage("Converted string [%s] to vector [%f %f %f]", str, vector[0], vector[1], vector[2]);
 }
 
-public Action Command_DeleteSpray(int client, int args)
+bool GetTargetedSpray(int client, int &target)
 {
-    float vPos[3];
-
-    if (args < 1)
+    // Find where the client is looking and do nothing if they are not looking
+    // at anything.
+    float location[3];
+    if (!GetPlayerAimPosition(client, location))
     {
-        if (GetPlayerAimPosition(client, vPos))
+        return false;
+    }
+
+    // Find the player with the spray closest to where the client is looking.
+    // This has an upper bound to ensure it finds something at least close to
+    // where they are looking.
+    float best = config_tracing_dist;
+    for (int other = 1; other <= MaxClients; other++)
+    {
+        if (!IsClientInGame(other) || IsFakeClient(other))
         {
-            for (int a = 1; a <= MaxClients; a++)
-            {
-                if (!IsClientInGame(a) || IsFakeClient(a))
-                {
-                    continue;
-                }
-
-                if (GetVectorDistance(vPos, SprayLocation[a]) <= config_tracing_dist)
-                {
-                    SprayDecal(a, 0, config_delete_loc);
-                    PrintToChat(client, "%t", "Removed", a);
-
-                    ShowActivity2(client, "[Ban Spray] ", "%t", a);
-                    LogAction(client, a, "%L removed spray of %L", client, a);
-                }
-                else
-                {
-                    PrintToChat(client, "%t", "Error");
-                }
-            }
+            continue;
         }
 
-        return Plugin_Handled;
+        float distance = GetVectorDistance(location, g_clients[other].location);
+        if (distance < best)
+        {
+            best   = distance;
+            target = other;
+        }
     }
+    return best < config_tracing_dist;
+}
 
-    int  target;
-    char target_name[MAX_NAME_LENGTH];
-
-    GetCmdArg(1, target_name, sizeof(target_name));
-
-    if ((target = FindTarget(client, target_name, false, true)) <= 0)
+bool GetPlayerAimPosition(int client, float vecPos[3])
+{
+    if (!IsValidClient(client))
     {
-        return Plugin_Handled;
+        return false;
     }
 
-    // Remove Player's Spray
-    SprayDecal(target, 0, config_delete_loc);
-    PrintToChat(client, "%t", "Removed", target);
+    float vecAngles[3];
+    float vecOrigin[3];
 
-    ShowActivity2(client, "[Ban Spray] ", "%t", target);
-    LogAction(client, target, "%L removed spray of %L", client, target);
+    GetClientEyePosition(client, vecOrigin);
+    GetClientEyeAngles(client, vecAngles);
 
-    return Plugin_Handled;
+    Handle hTrace = TR_TraceRayFilterEx(vecOrigin, vecAngles, MASK_SHOT, RayType_Infinite, TraceEntityFilterPlayer, _, TRACE_EVERYTHING);
+
+    if (TR_DidHit(hTrace))
+    {
+        TR_GetEndPosition(vecPos, hTrace);
+        CloseHandle(hTrace);
+        return true;
+    }
+
+    CloseHandle(hTrace);
+    return false;
+}
+
+bool TraceEntityFilterPlayer(int entity, int contentsMask)
+{
+    return entity > MaxClients;
 }
 
 // ------------------------------------------
@@ -792,7 +666,7 @@ public void OnAdminMenuReady(Handle topmenu)
         return;
     }
 
-    g_adminMenu                   = topmenu;
+    g_adminMenu = topmenu;
 
     TopMenuObject player_commands = FindTopMenuCategory(g_adminMenu, ADMINMENU_PLAYERCOMMANDS);
 
@@ -820,11 +694,13 @@ public void AdminMenu_BanSpray(Handle topmenu, TopMenuAction action, TopMenuObje
 {
     switch (action)
     {
-        case TopMenuAction_DisplayOption: {
+        case TopMenuAction_DisplayOption:
+        {
             Format(buffer, maxlength, "%t", "Ban Unban");
         }
 
-        case TopMenuAction_SelectOption: {
+        case TopMenuAction_SelectOption:
+        {
             DisplayBanSprayPlayerMenu(param);
         }
     }
@@ -834,7 +710,7 @@ public void DisplayBanSprayPlayerMenu(int client)
 {
     Handle menu = CreateMenu(MenuHandler_BanSpray);
 
-    char   title[100];
+    char title[100];
     Format(title, sizeof(title), "%t", "Ban Sprays");
     SetMenuTitle(menu, title);
     SetMenuExitBackButton(menu, true);
@@ -848,18 +724,21 @@ public void MenuHandler_BanSpray(Handle menu, MenuAction action, int param1, int
 
     switch (action)
     {
-        case MenuAction_End: {
+        case MenuAction_End:
+        {
             CloseHandle(menu);
         }
 
-        case MenuAction_Cancel: {
+        case MenuAction_Cancel:
+        {
             if (param2 == MenuCancel_ExitBack && g_adminMenu != INVALID_HANDLE)
             {
                 DisplayTopMenu(g_adminMenu, client, TopMenuPosition_LastCategory);
             }
         }
 
-        case MenuAction_Select: {
+        case MenuAction_Select:
+        {
             char info[32];
 
             GetMenuItem(menu, param2, info, sizeof(info));
@@ -887,7 +766,7 @@ public void DisplayBanSprayMenu(int client, int target)
 {
     Handle menu = CreateMenu(MenuHandler_BanSprays);
 
-    char   title[100];
+    char title[100];
     Format(title, sizeof(title), "%t", "Choose");
     SetMenuTitle(menu, title);
     SetMenuExitBackButton(menu, true);
@@ -914,18 +793,21 @@ public void MenuHandler_BanSprays(Handle menu, MenuAction action, int param1, in
 
     switch (action)
     {
-        case MenuAction_End: {
+        case MenuAction_End:
+        {
             CloseHandle(menu);
         }
 
-        case MenuAction_Cancel: {
+        case MenuAction_Cancel:
+        {
             if (param1 == MenuCancel_ExitBack && g_adminMenu != INVALID_HANDLE)
             {
                 DisplayTopMenu(g_adminMenu, client, TopMenuPosition_LastCategory);
             }
         }
 
-        case MenuAction_Select: {
+        case MenuAction_Select:
+        {
             char info[32];
 
             GetMenuItem(menu, param2, info, sizeof(info));
@@ -933,12 +815,14 @@ public void MenuHandler_BanSprays(Handle menu, MenuAction action, int param1, in
 
             switch (action_info)
             {
-                case 0: {
-                    PerformSprayUnBan(client, g_BanSprayTarget[client]);
+                case 0:
+                {
+                    UnbanSpray(client, g_BanSprayTarget[client]);
                 }
 
-                case 1: {
-                    PerformSprayBan(client, g_BanSprayTarget[client]);
+                case 1:
+                {
+                    BanSpray(client, g_BanSprayTarget[client]);
                 }
             }
         }
@@ -979,16 +863,19 @@ public void Menu_StatusDisplay(Handle menu, MenuAction action, int param1, int p
 
     switch (action)
     {
-        case MenuAction_Cancel: {
+        case MenuAction_Cancel:
+        {
             switch (param2)
             {
-                case MenuCancel_ExitBack: {
+                case MenuCancel_ExitBack:
+                {
                     ShowCookieMenu(client);
                 }
             }
         }
 
-        case MenuAction_End: {
+        case MenuAction_End:
+        {
             CloseHandle(menu);
         }
     }
