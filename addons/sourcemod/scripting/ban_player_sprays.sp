@@ -44,6 +44,11 @@ public Plugin myinfo = {
 #define COOKIE_VALUE_BANNED  "banned"
 #define COOKIE_VALUE_LENGTH  8
 
+#define CMD_DELETESPRAY "sm_deletespray"
+#define CMD_BANSPRAY    "sm_banspray"
+#define CMD_UNBANSPRAY  "sm_unbanspray"
+#define CMD_BANSPRAYID  "sm_banspray_steamid"
+
 #define STEAMID64_LENGTH   18
 #define LOCATION_MAXLENGTH 30
 
@@ -62,12 +67,8 @@ enum struct Client {
 }
 
 Client g_clients[MAXPLAYERS + 1];
-Handle g_cookie;
+Handle g_cookie = INVALID_HANDLE;
 Handle regex_steamid64;
-
-// TODO: Clean these up
-char   g_BanSprayTarget[MAXPLAYERS + 1];
-Handle g_adminMenu = INVALID_HANDLE;
 
 /**
  * Automatically remove a player's spray when that player's spray is banned.
@@ -93,16 +94,16 @@ Handle convar_tracing_dist = INVALID_HANDLE;
 float  config_tracing_dist = 25.0;
 
 /**
- * Admins with this permission flag may ban players' sprays. It is parsed and
- * passed to RegAdminCmd(), which means we do not need to store it ourselves.
+ * Admins with this permission flag may ban players' sprays.
  **/
-Handle convar_adminflag_ban = INVALID_HANDLE;
+Handle    convar_adminflag_ban = INVALID_HANDLE;
+AdminFlag config_adminflag_ban = Admin_Ban;
 
 /**
- * Admins with this permission flag may delete sprays. It is parsed and passed
- * to RegAdminCmd(), which means we do not need to store it ourselves.
+ * Admins with this permission flag may delete sprays.
  **/
-Handle convar_adminflag_delete = INVALID_HANDLE;
+Handle    convar_adminflag_delete = INVALID_HANDLE;
+AdminFlag config_adminflag_delete = Admin_Kick;
 
 /**
  * Players may not create sprays within this radius (in hammer units) of an
@@ -144,7 +145,7 @@ public void OnPluginStart()
 
     AddTempEntHook("Player Decal", OnTempEntPlayerDecal);
 
-    SetCookieMenuItem(Menu_Status, 0, "Display Banned Spray Status");
+    SetCookieMenuItem(UserSettingsMenu, 0, "Spray Permission");
 
     g_cookie = RegClientCookie(COOKIE_IDENTIFIER, "Banned spray status", CookieAccess_Protected);
 
@@ -176,15 +177,13 @@ public void OnConfigsExecuted()
     GetConVarString(convar_delete_loc, buffer, sizeof(buffer));
     StringToVector(buffer, config_delete_loc);
 
-    AdminFlag flag;
-
     GetConVarString(convar_adminflag_ban, buffer, sizeof(buffer));
-    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], flag))
+    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], config_adminflag_ban))
     {
-        int bit = FlagToBit(flag);
-        RegAdminCmd("sm_banspray", OnAdminCmdBanSpray, bit, "Remove a player's ability to use sprays");
-        RegAdminCmd("sm_unbanspray", OnCmdUnbanSpray, bit, "Restore a player's ability to use sprays");
-        RegAdminCmd("sm_banspray_steamid", OnAdminCmdBanSpraySteamID, bit, "Manually add a SteamID to the list of players who are banned from using sprays");
+        int bit = FlagToBit(config_adminflag_ban);
+        RegAdminCmd(CMD_BANSPRAY, OnCmdBanSpray, bit, "Remove a player's ability to use sprays");
+        RegAdminCmd(CMD_UNBANSPRAY, OnCmdUnbanSpray, bit, "Restore a player's ability to use sprays");
+        RegAdminCmd(CMD_BANSPRAYID, OnCmdBanSpraySteamID, bit, "Manually add a SteamID to the list of players who are banned from using sprays");
     }
     else
     {
@@ -192,10 +191,10 @@ public void OnConfigsExecuted()
     }
 
     GetConVarString(convar_adminflag_delete, buffer, sizeof(buffer));
-    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], flag))
+    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], config_adminflag_delete))
     {
-        int bit = FlagToBit(flag);
-        RegAdminCmd("sm_deletespray", OnCmdDeleteSpray, bit, "Remove a player's spray by either looking at it or providing a player's name");
+        int bit = FlagToBit(config_adminflag_delete);
+        RegAdminCmd(CMD_DELETESPRAY, OnCmdDeleteSpray, bit, "Remove a player's spray by either looking at it or providing a player's name");
     }
     else
     {
@@ -242,11 +241,11 @@ public void OnClientDisconnect(int client)
 /**
  * Callback for the sm_banspray admin command.
  **/
-public Action OnAdminCmdBanSpray(int admin, int args)
+public Action OnCmdBanSpray(int admin, int args)
 {
     if (args < 1)
     {
-        ReplyToCommand(admin, "Usage: sm_banspray <player>");
+        CreateBanSprayMenu(admin);
         return Plugin_Handled;
     }
 
@@ -267,7 +266,7 @@ public Action OnAdminCmdBanSpray(int admin, int args)
 /**
  * Callback for the sm_banspray_steamid admin command.
  **/
-public Action OnAdminCmdBanSpraySteamID(int admin, int args)
+public Action OnCmdBanSpraySteamID(int admin, int args)
 {
     if (args < 2)
     {
@@ -308,7 +307,7 @@ public Action OnCmdUnbanSpray(int admin, int args)
 {
     if (args < 1)
     {
-        ReplyToCommand(admin, "Usage: sm_unbanspray <player>");
+        CreateUnbanSprayMenu(admin);
         return Plugin_Handled;
     }
 
@@ -635,221 +634,189 @@ bool TraceEntityFilterPlayer(int entity, int contentsMask)
     return entity > MaxClients;
 }
 
-// ------------------------------------------
-// ---------------- MENU -----------------
-// ------------------------------------------
+/**
+ * Create the item for this plugin that appears in the `!settings` menu.
+ **/
+void UserSettingsMenu(int client, CookieMenuAction action, any info, char[] buffer, int maxlen)
+{
+    switch (action)
+    {
+        case CookieMenuAction_DisplayOption:
+        {
+            Format(buffer, maxlen, "%t", "Display");
+        }
+
+        case CookieMenuAction_SelectOption:
+        {
+            Handle menu = CreateMenu(OnUserSettingsMenuEvent);
+
+            char text[64];
+            char msg[64];
+
+            Format(text, sizeof(text), "%t", "Status");
+            SetMenuTitle(menu, text);
+
+            if (IsClientBanned(client))
+            {
+                // TODO: Translation
+                Format(msg, sizeof(msg), "%t", "You are banned");
+                AddMenuItem(menu, "banned-spray", msg, ITEMDRAW_DISABLED);
+            }
+            else
+            {
+                // TODO: Translation
+                Format(msg, sizeof(msg), "%t", "You are not banned");
+                AddMenuItem(menu, "banned-spray", msg, ITEMDRAW_DISABLED);
+            }
+
+            SetMenuExitBackButton(menu, true);
+            SetMenuExitButton(menu, true);
+            DisplayMenu(menu, client, 15);
+        }
+    }
+}
+
+/**
+ * Process events for the submenu for this plugin in the `!settings` menu.
+ **/
+void OnUserSettingsMenuEvent(Handle menu, MenuAction action, int param1, int param2)
+{
+    // The menu created in OnUserSettingsMenu() is a default menu, which means
+    // that it might receive the following MenuActions: MenuAction_Start,
+    // MenuAction_Cancel, or MenuAction_End. We don't need to do anything with
+    // MenuAction_Start.
+    switch (action)
+    {
+        case MenuAction_Cancel:
+        {
+            if (param2 == MenuCancel_ExitBack)
+            {
+                ShowCookieMenu(param1);
+            }
+        }
+
+        case MenuAction_End:
+        {
+            CloseHandle(menu);
+        }
+    }
+}
+
 public void OnAdminMenuReady(Handle topmenu)
 {
-    if (topmenu == g_adminMenu)
+    TopMenuObject playercmds = FindTopMenuCategory(topmenu, ADMINMENU_PLAYERCOMMANDS);
+    if (playercmds == INVALID_TOPMENUOBJECT)
     {
         return;
     }
 
-    g_adminMenu = topmenu;
+    TopMenuObject topobj;
 
-    TopMenuObject player_commands = FindTopMenuCategory(g_adminMenu, ADMINMENU_PLAYERCOMMANDS);
-
-    if (player_commands == INVALID_TOPMENUOBJECT)
+    topobj = AddToTopMenu(topmenu, "ban-sprays-delete", TopMenuObject_Item, OnAdminDeleteSprayMenu, playercmds, _, config_adminflag_delete);
+    if (topobj == INVALID_TOPMENUOBJECT)
     {
-        return;
+        LogError("Failed to create admin menu item for %s", CMD_DELETESPRAY);
+        SetFailState("Failed to create admin menu item for %s", CMD_DELETESPRAY);
     }
 
-    AddToTopMenu(g_adminMenu, "sm_banspray", TopMenuObject_Item, AdminMenu_BanSpray, player_commands, "sm_banspray", ADMFLAG_BAN);
+    topobj = AddToTopMenu(topmenu, "ban-sprays-ban", TopMenuObject_Item, OnAdminBanSprayMenu, playercmds, _, config_adminflag_ban);
+    if (topobj == INVALID_TOPMENUOBJECT)
+    {
+        LogError("Failed to create admin menu item for %s", CMD_BANSPRAY);
+        SetFailState("Failed to create admin menu item for %s", CMD_BANSPRAY);
+    }
+
+    topobj = AddToTopMenu(topmenu, "ban-sprays-unban", TopMenuObject_Item, OnAdminUnbanSprayMenu, playercmds, _, config_adminflag_ban);
+    if (topobj == INVALID_TOPMENUOBJECT)
+    {
+        LogError("Failed to create admin menu item for %s", CMD_UNBANSPRAY);
+        SetFailState("Failed to create admin menu item for %s", CMD_UNBANSPRAY);
+    }
 }
 
-public void Menu_Status(int client, CookieMenuAction action, any info, char[] buffer, int maxlen)
-{
-    if (action == CookieMenuAction_DisplayOption)
-    {
-        Format(buffer, maxlen, "%t", "Display");
-    }
-    else if (action == CookieMenuAction_SelectOption)
-    {
-        CreateMenuStatus(client);
-    }
-}
-
-public void AdminMenu_BanSpray(Handle topmenu, TopMenuAction action, TopMenuObject object_id, int param, char[] buffer, int maxlength)
+/**
+ * The `TopMenuHandler` callback function for the admin menu item to delete sprays.
+ **/
+void OnAdminDeleteSprayMenu(TopMenu topmenu, TopMenuAction action, TopMenuObject topobj, int admin, char[] buffer, int maxlen)
 {
     switch (action)
     {
         case TopMenuAction_DisplayOption:
         {
-            Format(buffer, maxlength, "%t", "Ban Unban");
+            // TODO: Translation
+            Format(buffer, maxlen, "Delete spray");
         }
 
         case TopMenuAction_SelectOption:
         {
-            DisplayBanSprayPlayerMenu(param);
+            int target;
+            if (GetTargetedSpray(admin, target))
+            {
+                DeleteSpray(admin, target);
+            }
         }
     }
 }
 
-public void DisplayBanSprayPlayerMenu(int client)
+/**
+ * The `TopMenuHandler` callback function for the admin menu item to ban sprays.
+ **/
+void OnAdminBanSprayMenu(TopMenu topmenu, TopMenuAction action, TopMenuObject topobj, int admin, char[] buffer, int maxlen)
 {
-    Handle menu = CreateMenu(MenuHandler_BanSpray);
-
-    char title[100];
-    Format(title, sizeof(title), "%t", "Ban Sprays");
-    SetMenuTitle(menu, title);
-    SetMenuExitBackButton(menu, true);
-    AddTargetsToMenu2(menu, client, COMMAND_FILTER_CONNECTED | COMMAND_FILTER_NO_BOTS);
-    DisplayMenu(menu, client, MENU_TIME_FOREVER);
-}
-
-public void MenuHandler_BanSpray(Handle menu, MenuAction action, int param1, int param2)
-{
-    int client = param1;
-
     switch (action)
     {
-        case MenuAction_End:
+        case TopMenuAction_DisplayOption:
         {
-            CloseHandle(menu);
+            // TODO: Translation
+            Format(buffer, maxlen, "%s", "Ban spray");
         }
 
-        case MenuAction_Cancel:
+        case TopMenuAction_SelectOption:
         {
-            if (param2 == MenuCancel_ExitBack && g_adminMenu != INVALID_HANDLE)
-            {
-                DisplayTopMenu(g_adminMenu, client, TopMenuPosition_LastCategory);
-            }
-        }
-
-        case MenuAction_Select:
-        {
-            char info[32];
-
-            GetMenuItem(menu, param2, info, sizeof(info));
-            int userid = StringToInt(info);
-            int target = GetClientOfUserId(userid);
-
-            if (!target)
-            {
-                PrintToChat(client, "[Banned Spray] %t", "Player no longer available");
-            }
-            else if (!CanUserTarget(client, target))
-            {
-                PrintToChat(client, "[Banned Spray] %t", "Unable to target");
-            }
-            else
-            {
-                g_BanSprayTarget[client] = target;
-                DisplayBanSprayMenu(client, target);
-            }
+            CreateBanSprayMenu(admin);
         }
     }
 }
 
-public void DisplayBanSprayMenu(int client, int target)
+void CreateBanSprayMenu(int admin)
 {
-    Handle menu = CreateMenu(MenuHandler_BanSprays);
+    Handle menu = CreateMenu(OnBanSprayMenuEvent);
 
-    char title[100];
-    Format(title, sizeof(title), "%t", "Choose");
-    SetMenuTitle(menu, title);
-    SetMenuExitBackButton(menu, true);
-
-    char cookie[8];
-
-    GetClientCookie(target, g_cookie, cookie, sizeof(cookie));
-
-    if (!strcmp(cookie, "1"))
-    {
-        AddMenuItem(menu, "0", "UnBan Player's Spray");
-    }
-    else
-    {
-        AddMenuItem(menu, "1", "Ban Player's Spray");
-    }
-
-    DisplayMenu(menu, client, MENU_TIME_FOREVER);
-}
-
-public void MenuHandler_BanSprays(Handle menu, MenuAction action, int param1, int param2)
-{
-    int client = param1;
-
-    switch (action)
-    {
-        case MenuAction_End:
-        {
-            CloseHandle(menu);
-        }
-
-        case MenuAction_Cancel:
-        {
-            if (param1 == MenuCancel_ExitBack && g_adminMenu != INVALID_HANDLE)
-            {
-                DisplayTopMenu(g_adminMenu, client, TopMenuPosition_LastCategory);
-            }
-        }
-
-        case MenuAction_Select:
-        {
-            char info[32];
-
-            GetMenuItem(menu, param2, info, sizeof(info));
-            int action_info = StringToInt(info);
-
-            switch (action_info)
-            {
-                case 0:
-                {
-                    UnbanSpray(client, g_BanSprayTarget[client]);
-                }
-
-                case 1:
-                {
-                    BanSpray(client, g_BanSprayTarget[client]);
-                }
-            }
-        }
-    }
-}
-
-public void CreateMenuStatus(int client)
-{
-    Handle menu = CreateMenu(Menu_StatusDisplay);
-    char   text[64];
-    char   cookie[8];
-    char   msg[64];
-
-    Format(text, sizeof(text), "%t", "Status");
-    SetMenuTitle(menu, text);
-
-    GetClientCookie(client, g_cookie, cookie, sizeof(cookie));
-
-    if (!strcmp(cookie, "1"))
-    {
-        Format(msg, sizeof(msg), "%t", "You are banned");
-        AddMenuItem(menu, "banned-spray", msg, ITEMDRAW_DISABLED);
-    }
-    else
-    {
-        Format(msg, sizeof(msg), "%t", "You are not banned");
-        AddMenuItem(menu, "banned-spray", msg, ITEMDRAW_DISABLED);
-    }
-
-    SetMenuExitBackButton(menu, true);
+    // TODO: Translation
+    SetMenuTitle(menu, "%s", "Ban spray");
     SetMenuExitButton(menu, true);
-    DisplayMenu(menu, client, 15);
+    SetMenuExitBackButton(menu, true);
+
+    // TODO: Translation
+    AddMenuItem(menu, ":crosshair:", ":crosshair:", ITEMDRAW_DEFAULT);
+    AddMenuItem(menu, "", "", ITEMDRAW_SPACER);
+    AddMenuItemTargets(menu, admin, false);
+
+    DisplayMenu(menu, admin, MENU_TIME_FOREVER);
 }
 
-public void Menu_StatusDisplay(Handle menu, MenuAction action, int param1, int param2)
+/**
+ * The `MenuHandler` callback function for the submenu to ban sprays.
+ **/
+void OnBanSprayMenuEvent(Handle menu, MenuAction action, int admin, int param2)
 {
-    int client = param1;
-
     switch (action)
     {
+        case MenuAction_Select:
+        {
+            int target;
+            if (GetMenuItemTarget(menu, param2, admin, target))
+            {
+                BanSpray(admin, target);
+            }
+        }
+
         case MenuAction_Cancel:
         {
-            switch (param2)
+            if (param2 == MenuCancel_ExitBack)
             {
-                case MenuCancel_ExitBack:
-                {
-                    ShowCookieMenu(client);
-                }
+                Handle topmenu = view_as<Handle>(GetAdminTopMenu());
+                DisplayTopMenu(topmenu, admin, TopMenuPosition_LastCategory);
             }
         }
 
@@ -858,4 +825,121 @@ public void Menu_StatusDisplay(Handle menu, MenuAction action, int param1, int p
             CloseHandle(menu);
         }
     }
+}
+
+/**
+ * The `TopMenuHandler` callback function for the admin menu item to unban sprays.
+ **/
+void OnAdminUnbanSprayMenu(TopMenu topmenu, TopMenuAction action, TopMenuObject topobj, int admin, char[] buffer, int maxlen)
+{
+    switch (action)
+    {
+        case TopMenuAction_DisplayOption:
+        {
+            // TODO: Translation
+            Format(buffer, maxlen, "%s", "Unban spray");
+        }
+
+        case TopMenuAction_SelectOption:
+        {
+            CreateUnbanSprayMenu(admin);
+        }
+    }
+}
+
+void CreateUnbanSprayMenu(int admin)
+{
+    Handle menu = CreateMenu(OnUnbanSprayMenuEvent);
+
+    // TODO: Translation
+    SetMenuTitle(menu, "%s", "Unban spray");
+    SetMenuExitButton(menu, true);
+    SetMenuExitBackButton(menu, true);
+
+    AddMenuItemTargets(menu, admin, true);
+
+    DisplayMenu(menu, admin, MENU_TIME_FOREVER);
+}
+
+/**
+ * The `MenuHandler` callback function for the submenu to unban sprays.
+ **/
+void OnUnbanSprayMenuEvent(Handle menu, MenuAction action, int admin, int param2)
+{
+    switch (action)
+    {
+        case MenuAction_Select:
+        {
+            int target;
+            if (GetMenuItemTarget(menu, param2, admin, target))
+            {
+                UnbanSpray(admin, target);
+            }
+        }
+
+        case MenuAction_Cancel:
+        {
+            if (param2 == MenuCancel_ExitBack)
+            {
+                Handle topmenu = view_as<Handle>(GetAdminTopMenu());
+                DisplayTopMenu(topmenu, admin, TopMenuPosition_LastCategory);
+            }
+        }
+
+        case MenuAction_End:
+        {
+            CloseHandle(menu);
+        }
+    }
+}
+
+void AddMenuItemTargets(Handle menu, int admin, bool banned)
+{
+    for (int client = 1; client <= MaxClients; client++)
+    {
+        // Do not include any invalid clients, clients who have immunity
+        // from the current admin, or clients who already have the
+        // status this would apply.
+        if (IsClientInGame(client) &&
+            !IsFakeClient(client) &&
+            CanUserTarget(admin, client) &&
+            (IsClientBanned(client)) == banned)
+        {
+            char name[MAX_NAME_LENGTH];
+            GetClientName(client, name, sizeof(name));
+
+            char userid[STEAMID64_LENGTH];
+            IntToString(GetClientUserId(client), userid, sizeof(userid));
+
+            AddMenuItem(menu, userid, name, ITEMDRAW_DEFAULT);
+        }
+    }
+}
+
+bool GetMenuItemTarget(Handle menu, int item, int admin, int &target)
+{
+    char info[STEAMID64_LENGTH];
+    GetMenuItem(menu, item, info, sizeof(info));
+
+    if (StrEqual(info, ":crosshair:"))
+    {
+        if (!GetTargetedSpray(admin, target))
+        {
+            // TODO: Translation
+            PrintHintText(admin, "No targeted spray");
+            return false;
+        }
+    }
+    else
+    {
+        target = GetClientOfUserId(StringToInt(info));
+        if (!IsValidClient(target))
+        {
+            // TODO: Translation
+            PrintHintText(admin, "Invalid client");
+            return false;
+        }
+    }
+
+    return true;
 }
