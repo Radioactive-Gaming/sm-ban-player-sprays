@@ -1,3 +1,47 @@
+## [1.0.0] 2026-07-05
+
+### Changed
+
+- Admin menu
+  - There are now separate menu items for the ban and unban actions.
+  - Ban and unban actions only list targetable players which are currently
+    unbanned or banned respectively.
+- Admin commands
+  - `sm_banspray` and `sm_unbanspray` open a menu when they are invoked with no
+    arguments.
+  - `sm_banspray_steamid` accepts "allowed" or "banned" instead of "0" or "1" in
+    its second argument.
+- Console variable renames
+  - `sm_bannedsprays_remove` to `sm_bannedsprays_autoremove`
+  - `sm_bannedsprays_tmploc` to `sm_bannedsprays_delete_loc`
+  - `sm_bannedsprays_tracedist` to `sm_bannedsprays_targeting_radius`
+  - `sm_bannedsprays_protection` to `sm_bannedsprays_occlusion_radius`
+  - `sm_bannedsprays_auth` to `sm_bannedsprays_assume_banned`
+
+### Added
+
+- Admin menu
+  - An item to delete sprays
+- Chat commands
+  - The `!spray` chat user command to view spray information.
+- Console variables
+  - `sm_bannedsprays_adminflag_ban` controls which admins may ban or unban
+    sprays. This defaults to the ban permission flag ('c').
+  - `sm_bannedsprays_adminflag_delete` controls which admins may delete sprays.
+    This defaults to the kick permission flag ('d').
+
+### Removed
+
+- Admin commands
+  - `sm_banspray_list` (this information is available in the admin menu now)
+- Console variables
+  - `sm_bannedsprays_display`
+  - `sm_bannedsprays_warntype`
+  - `sm_bannedsprays_tracerate`
+  - `sm_bannedsprays_debug`
+- Dependencies
+  - multicolors
+
 ## [0.5.3] 2026-01-28
 
 ### Fixed
