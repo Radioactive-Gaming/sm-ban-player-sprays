@@ -15,7 +15,6 @@
 
 #include <adminmenu>
 #include <clientprefs>
-#include <multicolors>
 #include <regex>
 #include <sdktools>
 #include <sourcemod>
