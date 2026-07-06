@@ -89,8 +89,8 @@ float  config_delete_loc[3] = {0.0, 0.0, 0.0};
  * Sprays within this distance (in hammer units) are included in during
  * raycasts.
  **/
-Handle convar_tracing_dist = INVALID_HANDLE;
-float  config_tracing_dist = 25.0;
+Handle convar_targeting_radius = INVALID_HANDLE;
+float  config_targeting_radius = 25.0;
 
 /**
  * Admins with this permission flag may ban players' sprays.
@@ -128,7 +128,7 @@ public void OnPluginStart()
 
     convar_autoremove       = CreateConVar("sm_bannedsprays_autoremove", "1", "Automatically remove a player's spray from the map when their spray is banned");
     convar_delete_loc       = CreateConVar("sm_bannedsprays_delete_loc", "0.00 0.00 0.00", "Deleted sprays are moved to this location on the map");
-    convar_tracing_dist     = CreateConVar("sm_bannedsprays_tracing_dist", "25", "The distance to include sprays during a raycast", _, true, 0.0, true, 250.0);
+    convar_targeting_radius = CreateConVar("sm_bannedsprays_targeting_radius", "25", "The distance to include sprays during a raycast", _, true, 0.0, true, 250.0);
     convar_adminflag_ban    = CreateConVar("sm_bannedsprays_adminflag_ban", "d", "Admins with this permission flag may ban players' sprays");
     convar_adminflag_delete = CreateConVar("sm_bannedsprays_adminflag_delete", "c", "Admins with this permission flag may delete sprays");
     convar_occlusion_radius = CreateConVar("sm_bannedsprays_occlusion_radius", "0", "Players may not create sprays within this radius of an existing spray", _, true, 0.0, false, 1000.0);
@@ -168,7 +168,7 @@ public void OnConfigsExecuted()
 
     // Simple configuration variables.
     config_autoremove       = GetConVarBool(convar_autoremove);
-    config_tracing_dist     = GetConVarFloat(convar_tracing_dist);
+    config_targeting_radius = GetConVarFloat(convar_targeting_radius);
     config_occlusion_radius = GetConVarFloat(convar_occlusion_radius);
     config_assume_banned    = GetConVarBool(convar_assume_banned);
 
@@ -589,7 +589,7 @@ bool GetTargetedSpray(int client, int &target)
     // Find the player with the spray closest to where the client is looking.
     // This has an upper bound to ensure it finds something at least close to
     // where they are looking.
-    float best = config_tracing_dist;
+    float best = config_targeting_radius;
     for (int other = 1; other <= MaxClients; other++)
     {
         if (!IsClientInGame(other) || IsFakeClient(other))
@@ -604,7 +604,7 @@ bool GetTargetedSpray(int client, int &target)
             target = other;
         }
     }
-    return best < config_tracing_dist;
+    return best < config_targeting_radius;
 }
 
 bool GetPlayerAimPosition(int client, float vecPos[3])
