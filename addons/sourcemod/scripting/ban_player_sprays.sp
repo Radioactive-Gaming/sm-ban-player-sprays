@@ -177,28 +177,21 @@ public void OnConfigsExecuted()
     StringToVector(buffer, g_config_delete_loc);
 
     GetConVarString(g_convar_adminflag_ban, buffer, sizeof(buffer));
-    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], g_config_adminflag_ban))
+    if (strlen(buffer) != 1 || !FindFlagByChar(buffer[0], g_config_adminflag_ban))
     {
-        int bit = FlagToBit(g_config_adminflag_ban);
-        RegAdminCmd(CMD_BANSPRAY, OnCmdBanSpray, bit, "Remove a player's ability to use sprays");
-        RegAdminCmd(CMD_UNBANSPRAY, OnCmdUnbanSpray, bit, "Restore a player's ability to use sprays");
-        RegAdminCmd(CMD_BANSPRAYID, OnCmdBanSpraySteamID, bit, "Manually add a SteamID to the list of players who are banned from using sprays");
-    }
-    else
-    {
-        LogInvalidConVarValue(g_convar_adminflag_ban);
+        LogInvalidConVarValue(g_convar_adminflag_ban); // noreturn
     }
 
     GetConVarString(g_convar_adminflag_delete, buffer, sizeof(buffer));
-    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], g_config_adminflag_delete))
+    if (strlen(buffer) != 1 && !FindFlagByChar(buffer[0], g_config_adminflag_delete))
     {
-        int bit = FlagToBit(g_config_adminflag_delete);
-        RegAdminCmd(CMD_DELETESPRAY, OnCmdDeleteSpray, bit, "Remove a player's spray by either looking at it or providing a player's name");
+        LogInvalidConVarValue(g_convar_adminflag_delete); // noreturn
     }
-    else
-    {
-        LogInvalidConVarValue(g_convar_adminflag_delete);
-    }
+
+    AddCommandListener(OnCmdBanSpray, CMD_BANSPRAY);
+    AddCommandListener(OnCmdUnbanSpray, CMD_UNBANSPRAY);
+    AddCommandListener(OnCmdBanSpraySteamID, CMD_BANSPRAYID);
+    AddCommandListener(OnCmdDeleteSpray, CMD_DELETESPRAY);
 
     AddCommandListener(OnUserCmdSpray, "say");
     AddCommandListener(OnUserCmdSpray, "say_team");
@@ -263,11 +256,23 @@ public void OnClientDisconnect(int client)
 /**
  * Callback for the sm_banspray admin command.
  **/
-public Action OnCmdBanSpray(int admin, int args)
+public Action OnCmdBanSpray(int client, const char[] command, int argc)
 {
-    if (args < 1)
+    if (!IsValidClient(client))
     {
-        CreateBanSprayMenu(admin);
+        return Plugin_Handled;
+    }
+
+    AdminId admin = GetUserAdmin(client);
+    if (!GetAdminFlag(admin, g_config_adminflag_ban, Access_Effective))
+    {
+        ReplyToCommand(client, "You do not have permission to use this command");
+        return Plugin_Handled;
+    }
+
+    if (argc < 1)
+    {
+        CreateBanSprayMenu(client);
         return Plugin_Handled;
     }
 
@@ -276,10 +281,10 @@ public Action OnCmdBanSpray(int admin, int args)
 
     GetCmdArg(1, target_name, sizeof(target_name));
 
-    int target = FindTarget(admin, target_name, true, false);
+    int target = FindTarget(client, target_name, true, false);
     if (target > 0)
     {
-        BanSpray(admin, target);
+        BanSpray(client, target);
     }
 
     return Plugin_Handled;
@@ -288,11 +293,23 @@ public Action OnCmdBanSpray(int admin, int args)
 /**
  * Callback for the sm_banspray_steamid admin command.
  **/
-public Action OnCmdBanSpraySteamID(int admin, int args)
+public Action OnCmdBanSpraySteamID(int client, const char[] command, int argc)
 {
-    if (args < 2)
+    if (!IsValidClient(client))
     {
-        ReplyToCommand(admin, "Usage: sm_banspray_steamid <SteamID64> <allowed | banned>");
+        return Plugin_Handled;
+    }
+
+    AdminId admin = GetUserAdmin(client);
+    if (!GetAdminFlag(admin, g_config_adminflag_ban, Access_Effective))
+    {
+        ReplyToCommand(client, "You do not have permission to use this command");
+        return Plugin_Handled;
+    }
+
+    if (argc < 2)
+    {
+        ReplyToCommand(client, "Usage: sm_banspray_steamid <SteamID64> <allowed | banned>");
         return Plugin_Handled;
     }
 
@@ -301,7 +318,7 @@ public Action OnCmdBanSpraySteamID(int admin, int args)
     GetCmdArg(1, steamid, sizeof(steamid));
     if (!MatchRegex(g_regex_steamid64, steamid))
     {
-        ReplyToCommand(admin, "Invalid SteamID '%s': Expected SteamID64", steamid);
+        ReplyToCommand(client, "Invalid SteamID '%s': Expected SteamID64", steamid);
         return Plugin_Handled;
     }
 
@@ -319,32 +336,44 @@ public Action OnCmdBanSpraySteamID(int admin, int args)
     }
     else
     {
-        ReplyToCommand(admin, "Invalid ban status: Expected allowed or banned");
+        ReplyToCommand(client, "Invalid ban status: Expected allowed or banned");
         return Plugin_Handled;
     }
 
-    LogAction(admin, -1, "Set spray ban value for [%s] to %s", steamid, value);
+    LogAction(client, -1, "Set spray ban value for [%s] to %s", steamid, value);
     return Plugin_Handled;
 }
 
 /**
  * Callback for the sm_unbanspray admin command.
  **/
-public Action OnCmdUnbanSpray(int admin, int args)
+public Action OnCmdUnbanSpray(int client, const char[] command, int argc)
 {
-    if (args < 1)
+    if (!IsValidClient(client))
     {
-        CreateUnbanSprayMenu(admin);
+        return Plugin_Handled;
+    }
+
+    AdminId admin = GetUserAdmin(client);
+    if (!GetAdminFlag(admin, g_config_adminflag_ban, Access_Effective))
+    {
+        ReplyToCommand(client, "You do not have permission to use this command");
+        return Plugin_Handled;
+    }
+
+    if (argc < 1)
+    {
+        CreateUnbanSprayMenu(client);
         return Plugin_Handled;
     }
 
     char target_name[MAX_NAME_LENGTH];
     GetCmdArg(1, target_name, sizeof(target_name));
 
-    int target = FindTarget(admin, target_name, false, true);
+    int target = FindTarget(client, target_name, false, true);
     if (IsValidClient(target))
     {
-        UnbanSpray(admin, target);
+        UnbanSpray(client, target);
     }
 
     return Plugin_Handled;
@@ -353,18 +382,30 @@ public Action OnCmdUnbanSpray(int admin, int args)
 /**
  * Callback for the sm_deletespray admin command.
  **/
-public Action OnCmdDeleteSpray(int admin, int args)
+public Action OnCmdDeleteSpray(int client, const char[] command, int argc)
 {
-    switch (args)
+    if (!IsValidClient(client))
+    {
+        return Plugin_Handled;
+    }
+
+    AdminId admin = GetUserAdmin(client);
+    if (!GetAdminFlag(admin, g_config_adminflag_delete, Access_Effective))
+    {
+        ReplyToCommand(client, "You do not have permission to use this command");
+        return Plugin_Handled;
+    }
+
+    switch (argc)
     {
         // If no argument is provided, this does a raycast to remove the
         // spray(s) under the admin's crosshair.
         case 0:
         {
-            int client;
-            if (GetTargetedSpray(admin, client))
+            int target;
+            if (GetTargetedSpray(client, target))
             {
-                DeleteSpray(admin, client);
+                DeleteSpray(client, target);
             }
         }
 
@@ -375,17 +416,17 @@ public Action OnCmdDeleteSpray(int admin, int args)
             char name[MAX_NAME_LENGTH];
             GetCmdArg(1, name, sizeof(name));
 
-            int client = FindTarget(admin, name, false, true);
-            if (IsValidClient(client))
+            int target = FindTarget(client, name, false, true);
+            if (IsValidClient(target))
             {
-                DeleteSpray(admin, client);
+                DeleteSpray(client, target);
             }
         }
 
         default:
         {
             // TODO: Translation
-            ReplyToCommand(admin, "Usage: sm_deletespray <player>?");
+            ReplyToCommand(client, "Usage: sm_deletespray <player>?");
         }
     }
 
