@@ -204,18 +204,31 @@ public void OnConfigsExecuted()
     AddCommandListener(OnUserCmdSpray, "say_team");
 }
 
+/**
+ * https://sm.alliedmods.net/new-api/clients/OnClientPostAdminCheck
+ *
+ * This resets the entry in the g_clients array for a player when they join.
+ **/
 public void OnClientPostAdminCheck(int client)
 {
     g_clients[client].location[0] = g_config_delete_loc[0];
     g_clients[client].location[1] = g_config_delete_loc[1];
     g_clients[client].location[2] = g_config_delete_loc[2];
 
+    // Sourcemod doesn't document whether this is called before or after the
+    // cookies are loaded. Since both callback involve database reads, we should
+    // assume that the may happen in any order.
     if (!AreClientCookiesCached(client))
     {
         g_clients[client].permission = SPRAY_PERMISSION_UNKNOWN;
     }
 }
 
+/**
+ * https://sm.alliedmods.net/new-api/clientprefs/OnClientCookiesCached
+ *
+ * We use this to save a client's permissions when they join the server.
+ **/
 public void OnClientCookiesCached(int client)
 {
     char value[COOKIE_VALUE_LENGTH];
@@ -232,6 +245,16 @@ public void OnClientCookiesCached(int client)
     }
 }
 
+/**
+ * https://sm.alliedmods.net/new-api/clients/OnClientDisconnect
+ *
+ * Sprays are temporary entities, which means that the server does not maintain
+ * a record of the spray. 'Deleting' them works by issuing the spray command as
+ * a player at an invalid location. This means that admin's CANNOT delete sprays
+ * after someone leaves. To ensure that someone cannot join, spray something
+ * obscene, and leave before an admin can act, we must always delete a spray as
+ * someone leaves.
+ **/
 public void OnClientDisconnect(int client)
 {
     DeleteSpray(0, client);
@@ -327,6 +350,9 @@ public Action OnCmdUnbanSpray(int admin, int args)
     return Plugin_Handled;
 }
 
+/**
+ * Callback for the sm_deletespray admin command.
+ **/
 public Action OnCmdDeleteSpray(int admin, int args)
 {
     switch (args)
@@ -366,6 +392,10 @@ public Action OnCmdDeleteSpray(int admin, int args)
     return Plugin_Handled;
 }
 
+/**
+ * Callback for the user !spray chat command. This hooks the say and say_team
+ * console commands.
+ **/
 public Action OnUserCmdSpray(int client, const char[] command, int argc)
 {
     if (argc < 1 || !IsValidClient(client))
@@ -446,6 +476,11 @@ public Action OnTempEntPlayerDecal(const char[] te_name, const int[] Players, in
     return Plugin_Continue;
 }
 
+/**
+ * 'Delete' a spray. Sprays are temporary entities, which means they cannot be
+ * deleted directly. Instead, we need to reissue the spray command for the
+ * client at an invalid location.
+ **/
 void DeleteSpray(int admin, int client)
 {
     TE_Start("Player Decal");
@@ -465,6 +500,9 @@ void DeleteSpray(int admin, int client)
     }
 }
 
+/**
+ * Ban a player from placing sprays.
+ **/
 void BanSpray(int admin, int client)
 {
     if (g_config_autoremove)
@@ -480,6 +518,9 @@ void BanSpray(int admin, int client)
     LogAction(admin, client, "%L banned sprays for %L", admin, client);
 }
 
+/**
+ * Allow a banned player to place sprays again.
+ **/
 void UnbanSpray(int admin, int client)
 {
     g_clients[client].permission = SPRAY_PERMISSION_ALLOWED;
@@ -490,6 +531,9 @@ void UnbanSpray(int admin, int client)
     LogAction(admin, client, "%L unbanned sprays for %L", admin, client);
 }
 
+/**
+ * Show the information for the spray that the client is currently looking at.
+ **/
 void DisplaySpray(int client)
 {
     int target;
@@ -512,6 +556,11 @@ void DisplaySpray(int client)
     }
 }
 
+/**
+ * Checked if a specific player is allowed to place a spray. Loading this
+ * information from the database may take a while. It will eventually be
+ * populated by OnClientCookiesCached().
+ **/
 bool IsClientBanned(int client)
 {
     switch (g_clients[client].permission)
@@ -537,6 +586,11 @@ bool IsClientBanned(int client)
     return false; // unreachable
 }
 
+/**
+ * Ensure that the client index is within valid bounds, that the index refers
+ * to an connected client that has joined the game, and that the client is not
+ * a bot.
+ **/
 bool IsValidClient(int client)
 {
     return 0 < client && client <= MaxClients &&
@@ -547,6 +601,9 @@ bool IsValidClient(int client)
            !IsFakeClient(client);
 }
 
+/**
+ * A consistent log-and-crash for invalid console variables.
+ **/
 void LogInvalidConVarValue(Handle convar)
 {
     char name[50];
@@ -560,10 +617,8 @@ void LogInvalidConVarValue(Handle convar)
 }
 
 /**
- * Converts a string to a vector.
- *
- * @param str String to convert to a vector.
- * @param vector Vector to store the converted string to vector
+ * Converts a string to a vector. Sourcemod does not have GetConVar*() function
+ * for vectors, so we use this together with GetConVarString().
  **/
 void StringToVector(char str[LOCATION_MAXLENGTH], float vector[3])
 {
@@ -581,6 +636,11 @@ void StringToVector(char str[LOCATION_MAXLENGTH], float vector[3])
     vector[2] = StringToFloat(t_str[2]);
 }
 
+/**
+ * Determine the owner (target) of the nearest spray to the user's (client's)
+ * crosshair. Return false if there were no sprays within the targeting radius
+ * of the user's crosshair.
+ **/
 bool GetTargetedSpray(int client, int &target)
 {
     // Find where the client is looking and do nothing if they are not looking
@@ -612,6 +672,9 @@ bool GetTargetedSpray(int client, int &target)
     return best < g_config_targeting_radius;
 }
 
+/**
+ * Perform a raycast to find the position under a client's crosshair.
+ **/
 bool GetPlayerAimPosition(int client, float vecPos[3])
 {
     if (!IsValidClient(client))
@@ -638,6 +701,12 @@ bool GetPlayerAimPosition(int client, float vecPos[3])
     return false;
 }
 
+/**
+ * Do not hit player's with the raytrace from GetPlayerAimPosition(). This means
+ * that (in theory) only map geometry and props are valid targets. In practice
+ * this is probably not very robust, but there is little risk in someone
+ * accidentally getting their raytrace blocked by something else.
+ **/
 bool TraceEntityFilterPlayer(int entity, int contentsMask)
 {
     return entity > MaxClients;
@@ -711,6 +780,10 @@ void OnUserSettingsMenuEvent(Handle menu, MenuAction action, int param1, int par
     }
 }
 
+/**
+ * Add the menu items for deleting, banning, and unbanning sprays to the Player
+ * Commands admin menu.
+ **/
 public void OnAdminMenuReady(Handle topmenu)
 {
     TopMenuObject playercmds = FindTopMenuCategory(topmenu, ADMINMENU_PLAYERCOMMANDS);
@@ -787,6 +860,10 @@ void OnAdminBanSprayMenu(TopMenu topmenu, TopMenuAction action, TopMenuObject to
     }
 }
 
+/**
+ * Create a menu where an admin may select a player to ban, or ban the spray
+ * under their crosshair. This only lists player who are not currently banned.
+ **/
 void CreateBanSprayMenu(int admin)
 {
     Handle menu = CreateMenu(OnBanSprayMenuEvent);
@@ -856,6 +933,10 @@ void OnAdminUnbanSprayMenu(TopMenu topmenu, TopMenuAction action, TopMenuObject 
     }
 }
 
+/**
+ * Create a menu where an admin may select a player to unban. This only lists
+ * players which are currently banned.
+ **/
 void CreateUnbanSprayMenu(int admin)
 {
     Handle menu = CreateMenu(OnUnbanSprayMenuEvent);
@@ -902,6 +983,10 @@ void OnUnbanSprayMenuEvent(Handle menu, MenuAction action, int admin, int param2
     }
 }
 
+/**
+ * Populate a menu with players targetable by `admin`. Only include players
+ * whose status matches `banned`.
+ **/
 void AddMenuItemTargets(Handle menu, int admin, bool banned)
 {
     for (int client = 1; client <= MaxClients; client++)
@@ -924,8 +1009,15 @@ void AddMenuItemTargets(Handle menu, int admin, bool banned)
     }
 }
 
+/**
+ * Get a targeted player based on a selected menu item.
+ **/
 bool GetMenuItemTarget(Handle menu, int item, int admin, int &target)
 {
+    // The info associated with a menu item is typically the client serial (not
+    // that this is NOT the client index). However, the special value
+    // ':crosshair:' indicates that the plugin should do a raycast to find the
+    // target, instead of loading it from the menu.
     char info[STEAMID64_LENGTH];
     GetMenuItem(menu, item, info, sizeof(info));
 
