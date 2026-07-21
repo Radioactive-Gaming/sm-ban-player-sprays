@@ -539,7 +539,12 @@ bool IsClientBanned(int client)
 
 bool IsValidClient(int client)
 {
-    return 0 < client && client <= MaxClients && IsClientInGame(client);
+    return 0 < client && client <= MaxClients &&
+           IsClientConnected(client) &&
+           IsClientInGame(client) &&
+           !IsClientReplay(client) &&
+           !IsClientSourceTV(client) &&
+           !IsFakeClient(client);
 }
 
 void LogInvalidConVarValue(Handle convar)
@@ -592,7 +597,7 @@ bool GetTargetedSpray(int client, int &target)
     float best = g_config_targeting_radius;
     for (int other = 1; other <= MaxClients; other++)
     {
-        if (!IsClientInGame(other) || IsFakeClient(other))
+        if (!IsValidClient(client))
         {
             continue;
         }
@@ -904,8 +909,7 @@ void AddMenuItemTargets(Handle menu, int admin, bool banned)
         // Do not include any invalid clients, clients who have immunity
         // from the current admin, or clients who already have the
         // status this would apply.
-        if (IsClientInGame(client) &&
-            !IsFakeClient(client) &&
+        if (IsValidClient(client) &&
             CanUserTarget(admin, client) &&
             (IsClientBanned(client)) == banned)
         {
