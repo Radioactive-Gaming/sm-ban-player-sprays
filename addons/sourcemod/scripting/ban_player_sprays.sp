@@ -67,13 +67,13 @@ enum struct Client {
 
 Client g_clients[MAXPLAYERS + 1];
 Handle g_cookie = INVALID_HANDLE;
-Regex  regex_steamid64;
+Regex  g_regex_steamid64;
 
 /**
  * Automatically remove a player's spray when that player's spray is banned.
  **/
-bool   config_autoremove = true;
-Handle convar_autoremove = INVALID_HANDLE;
+bool   g_config_autoremove = true;
+Handle g_convar_autoremove = INVALID_HANDLE;
 
 /**
  * Deleted sprays are moved to this location on the map.
@@ -82,37 +82,37 @@ Handle convar_autoremove = INVALID_HANDLE;
  * is usually a safe place to move them, but some maps may require a custom
  * location.
  **/
-Handle convar_delete_loc    = INVALID_HANDLE;
-float  config_delete_loc[3] = {0.0, 0.0, 0.0};
+Handle g_convar_delete_loc    = INVALID_HANDLE;
+float  g_config_delete_loc[3] = {0.0, 0.0, 0.0};
 
 /**
  * Sprays within this distance (in hammer units) are included in during
  * raycasts.
  **/
-Handle convar_targeting_radius = INVALID_HANDLE;
-float  config_targeting_radius = 25.0;
+Handle g_convar_targeting_radius = INVALID_HANDLE;
+float  g_config_targeting_radius = 25.0;
 
 /**
  * Admins with this permission flag may ban players' sprays.
  **/
-Handle    convar_adminflag_ban = INVALID_HANDLE;
-AdminFlag config_adminflag_ban = Admin_Ban;
+Handle    g_convar_adminflag_ban = INVALID_HANDLE;
+AdminFlag g_config_adminflag_ban = Admin_Ban;
 
 /**
  * Admins with this permission flag may delete sprays.
  **/
-Handle    convar_adminflag_delete = INVALID_HANDLE;
-AdminFlag config_adminflag_delete = Admin_Kick;
+Handle    g_convar_adminflag_delete = INVALID_HANDLE;
+AdminFlag g_config_adminflag_delete = Admin_Kick;
 
 /**
  * Players may not create sprays within this radius (in hammer units) of an
  * existing spray. Setting this to zero disables the feature.
  **/
-Handle convar_occlusion_radius = INVALID_HANDLE;
-float  config_occlusion_radius = 0.0;
+Handle g_convar_occlusion_radius = INVALID_HANDLE;
+float  g_config_occlusion_radius = 0.0;
 
-Handle convar_assume_banned = INVALID_HANDLE;
-bool   config_assume_banned = false;
+Handle g_convar_assume_banned = INVALID_HANDLE;
+bool   g_config_assume_banned = false;
 
 /**
  * Called when the plugin is fully initialized and all known external references
@@ -126,17 +126,17 @@ public void OnPluginStart()
 {
     CreateConVar("sm_bannedsprays_version", PLUGIN_VERSION, "The version of Banned Sprays", FCVAR_SPONLY | FCVAR_REPLICATED | FCVAR_DONTRECORD);
 
-    convar_autoremove       = CreateConVar("sm_bannedsprays_autoremove", "1", "Automatically remove a player's spray from the map when their spray is banned");
-    convar_delete_loc       = CreateConVar("sm_bannedsprays_delete_loc", "0.00 0.00 0.00", "Deleted sprays are moved to this location on the map");
-    convar_targeting_radius = CreateConVar("sm_bannedsprays_targeting_radius", "25", "The distance to include sprays during a raycast", _, true, 0.0, true, 250.0);
-    convar_adminflag_ban    = CreateConVar("sm_bannedsprays_adminflag_ban", "d", "Admins with this permission flag may ban players' sprays");
-    convar_adminflag_delete = CreateConVar("sm_bannedsprays_adminflag_delete", "c", "Admins with this permission flag may delete sprays");
-    convar_occlusion_radius = CreateConVar("sm_bannedsprays_occlusion_radius", "0", "Players may not create sprays within this radius of an existing spray", _, true, 0.0, false, 1000.0);
-    convar_assume_banned    = CreateConVar("sm_bannedsprays_assume_banned", "0", "Assume clients are banned while waiting for the database to load their status");
+    g_convar_autoremove       = CreateConVar("sm_bannedsprays_autoremove", "1", "Automatically remove a player's spray from the map when their spray is banned");
+    g_convar_delete_loc       = CreateConVar("sm_bannedsprays_delete_loc", "0.00 0.00 0.00", "Deleted sprays are moved to this location on the map");
+    g_convar_targeting_radius = CreateConVar("sm_bannedsprays_targeting_radius", "25", "The distance to include sprays during a raycast", _, true, 0.0, true, 250.0);
+    g_convar_adminflag_ban    = CreateConVar("sm_bannedsprays_adminflag_ban", "d", "Admins with this permission flag may ban players' sprays");
+    g_convar_adminflag_delete = CreateConVar("sm_bannedsprays_adminflag_delete", "c", "Admins with this permission flag may delete sprays");
+    g_convar_occlusion_radius = CreateConVar("sm_bannedsprays_occlusion_radius", "0", "Players may not create sprays within this radius of an existing spray", _, true, 0.0, false, 1000.0);
+    g_convar_assume_banned    = CreateConVar("sm_bannedsprays_assume_banned", "0", "Assume clients are banned while waiting for the database to load their status");
 
     // This regular expression may be reused multiple times.
-    regex_steamid64 = CompileRegex("[0-9]{17}");
-    if (regex_steamid64 == INVALID_HANDLE)
+    g_regex_steamid64 = CompileRegex("[0-9]{17}");
+    if (g_regex_steamid64 == INVALID_HANDLE)
     {
         LogError("Failed to compile regular expression");
         SetFailState("Failed to compile regular expression");
@@ -167,37 +167,37 @@ public void OnConfigsExecuted()
     char buffer[LOCATION_MAXLENGTH];
 
     // Simple configuration variables.
-    config_autoremove       = GetConVarBool(convar_autoremove);
-    config_targeting_radius = GetConVarFloat(convar_targeting_radius);
-    config_occlusion_radius = GetConVarFloat(convar_occlusion_radius);
-    config_assume_banned    = GetConVarBool(convar_assume_banned);
+    g_config_autoremove       = GetConVarBool(g_convar_autoremove);
+    g_config_targeting_radius = GetConVarFloat(g_convar_targeting_radius);
+    g_config_occlusion_radius = GetConVarFloat(g_convar_occlusion_radius);
+    g_config_assume_banned    = GetConVarBool(g_convar_assume_banned);
 
     // There is no vector primitive for console variables. We must parse it ourselves.
-    GetConVarString(convar_delete_loc, buffer, sizeof(buffer));
-    StringToVector(buffer, config_delete_loc);
+    GetConVarString(g_convar_delete_loc, buffer, sizeof(buffer));
+    StringToVector(buffer, g_config_delete_loc);
 
-    GetConVarString(convar_adminflag_ban, buffer, sizeof(buffer));
-    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], config_adminflag_ban))
+    GetConVarString(g_convar_adminflag_ban, buffer, sizeof(buffer));
+    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], g_config_adminflag_ban))
     {
-        int bit = FlagToBit(config_adminflag_ban);
+        int bit = FlagToBit(g_config_adminflag_ban);
         RegAdminCmd(CMD_BANSPRAY, OnCmdBanSpray, bit, "Remove a player's ability to use sprays");
         RegAdminCmd(CMD_UNBANSPRAY, OnCmdUnbanSpray, bit, "Restore a player's ability to use sprays");
         RegAdminCmd(CMD_BANSPRAYID, OnCmdBanSpraySteamID, bit, "Manually add a SteamID to the list of players who are banned from using sprays");
     }
     else
     {
-        LogInvalidConVarValue(convar_adminflag_ban);
+        LogInvalidConVarValue(g_convar_adminflag_ban);
     }
 
-    GetConVarString(convar_adminflag_delete, buffer, sizeof(buffer));
-    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], config_adminflag_delete))
+    GetConVarString(g_convar_adminflag_delete, buffer, sizeof(buffer));
+    if (strlen(buffer) == 1 && FindFlagByChar(buffer[0], g_config_adminflag_delete))
     {
-        int bit = FlagToBit(config_adminflag_delete);
+        int bit = FlagToBit(g_config_adminflag_delete);
         RegAdminCmd(CMD_DELETESPRAY, OnCmdDeleteSpray, bit, "Remove a player's spray by either looking at it or providing a player's name");
     }
     else
     {
-        LogInvalidConVarValue(convar_adminflag_delete);
+        LogInvalidConVarValue(g_convar_adminflag_delete);
     }
 
     AddCommandListener(OnUserCmdSpray, "say");
@@ -206,9 +206,9 @@ public void OnConfigsExecuted()
 
 public void OnClientPostAdminCheck(int client)
 {
-    g_clients[client].location[0] = config_delete_loc[0];
-    g_clients[client].location[1] = config_delete_loc[1];
-    g_clients[client].location[2] = config_delete_loc[2];
+    g_clients[client].location[0] = g_config_delete_loc[0];
+    g_clients[client].location[1] = g_config_delete_loc[1];
+    g_clients[client].location[2] = g_config_delete_loc[2];
 
     if (!AreClientCookiesCached(client))
     {
@@ -276,7 +276,7 @@ public Action OnCmdBanSpraySteamID(int admin, int args)
     // The first argument must be a SteamID64.
     char steamid[STEAMID64_LENGTH];
     GetCmdArg(1, steamid, sizeof(steamid));
-    if (!MatchRegex(regex_steamid64, steamid))
+    if (!MatchRegex(g_regex_steamid64, steamid))
     {
         ReplyToCommand(admin, "Invalid SteamID '%s': Expected SteamID64", steamid);
         return Plugin_Handled;
@@ -420,7 +420,7 @@ public Action OnTempEntPlayerDecal(const char[] te_name, const int[] Players, in
     float location[3];
     TE_ReadVector("m_vecOrigin", location);
 
-    if (config_occlusion_radius > 0)
+    if (g_config_occlusion_radius > 0)
     {
         for (int other = 1; other <= MaxClients; other++)
         {
@@ -430,7 +430,7 @@ public Action OnTempEntPlayerDecal(const char[] te_name, const int[] Players, in
             }
 
             float distance = GetVectorDistance(location, g_clients[other].location);
-            if (distance <= config_occlusion_radius)
+            if (distance <= g_config_occlusion_radius)
             {
                 // TODO: Translation
                 PrintHintText(client, "You are too close to another spray");
@@ -449,7 +449,7 @@ public Action OnTempEntPlayerDecal(const char[] te_name, const int[] Players, in
 void DeleteSpray(int admin, int client)
 {
     TE_Start("Player Decal");
-    TE_WriteVector("m_vecOrigin", config_delete_loc);
+    TE_WriteVector("m_vecOrigin", g_config_delete_loc);
     TE_WriteNum("m_nEntity", 0);
     TE_WriteNum("m_nPlayer", client);
     TE_SendToAll();
@@ -467,7 +467,7 @@ void DeleteSpray(int admin, int client)
 
 void BanSpray(int admin, int client)
 {
-    if (config_autoremove)
+    if (g_config_autoremove)
     {
         DeleteSpray(admin, client);
     }
@@ -518,7 +518,7 @@ bool IsClientBanned(int client)
     {
         case SPRAY_PERMISSION_UNKNOWN:
         {
-            return config_assume_banned;
+            return g_config_assume_banned;
         }
 
         case SPRAY_PERMISSION_ALLOWED:
@@ -589,7 +589,7 @@ bool GetTargetedSpray(int client, int &target)
     // Find the player with the spray closest to where the client is looking.
     // This has an upper bound to ensure it finds something at least close to
     // where they are looking.
-    float best = config_targeting_radius;
+    float best = g_config_targeting_radius;
     for (int other = 1; other <= MaxClients; other++)
     {
         if (!IsClientInGame(other) || IsFakeClient(other))
@@ -604,7 +604,7 @@ bool GetTargetedSpray(int client, int &target)
             target = other;
         }
     }
-    return best < config_targeting_radius;
+    return best < g_config_targeting_radius;
 }
 
 bool GetPlayerAimPosition(int client, float vecPos[3])
@@ -716,21 +716,21 @@ public void OnAdminMenuReady(Handle topmenu)
 
     TopMenuObject topobj;
 
-    topobj = AddToTopMenu(topmenu, "ban-sprays-delete", TopMenuObject_Item, OnAdminDeleteSprayMenu, playercmds, _, config_adminflag_delete);
+    topobj = AddToTopMenu(topmenu, "ban-sprays-delete", TopMenuObject_Item, OnAdminDeleteSprayMenu, playercmds, _, g_config_adminflag_delete);
     if (topobj == INVALID_TOPMENUOBJECT)
     {
         LogError("Failed to create admin menu item for %s", CMD_DELETESPRAY);
         SetFailState("Failed to create admin menu item for %s", CMD_DELETESPRAY);
     }
 
-    topobj = AddToTopMenu(topmenu, "ban-sprays-ban", TopMenuObject_Item, OnAdminBanSprayMenu, playercmds, _, config_adminflag_ban);
+    topobj = AddToTopMenu(topmenu, "ban-sprays-ban", TopMenuObject_Item, OnAdminBanSprayMenu, playercmds, _, g_config_adminflag_ban);
     if (topobj == INVALID_TOPMENUOBJECT)
     {
         LogError("Failed to create admin menu item for %s", CMD_BANSPRAY);
         SetFailState("Failed to create admin menu item for %s", CMD_BANSPRAY);
     }
 
-    topobj = AddToTopMenu(topmenu, "ban-sprays-unban", TopMenuObject_Item, OnAdminUnbanSprayMenu, playercmds, _, config_adminflag_ban);
+    topobj = AddToTopMenu(topmenu, "ban-sprays-unban", TopMenuObject_Item, OnAdminUnbanSprayMenu, playercmds, _, g_config_adminflag_ban);
     if (topobj == INVALID_TOPMENUOBJECT)
     {
         LogError("Failed to create admin menu item for %s", CMD_UNBANSPRAY);
