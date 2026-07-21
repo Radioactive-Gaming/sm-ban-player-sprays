@@ -412,7 +412,7 @@ public Action OnUserCmdSpray(int client, const char[] command, int argc)
     }
 
     DisplaySpray(client);
-    return Plugin_Stop;
+    return Plugin_Handled;
 }
 
 /**
