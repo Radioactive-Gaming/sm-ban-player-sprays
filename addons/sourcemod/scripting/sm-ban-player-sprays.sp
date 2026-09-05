@@ -23,7 +23,7 @@
 #define PLUGIN_AUTHOR      "TnTSCS aka ClarkKent, X8ETr1x, burlindw"
 #define PLUGIN_URL         "https://github.com/Radioactive-Gaming/sm-ban-player-sprays"
 #define PLUGIN_DESCRIPTION "Delete sprays and ban players from using sprays"
-#define PLUGIN_VERSION     "1.0.0"
+#define PLUGIN_VERSION     "1.0.1"
 
 public Plugin myinfo = {
     name        = PLUGIN_NAME,
