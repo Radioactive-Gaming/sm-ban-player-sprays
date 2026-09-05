@@ -1,3 +1,11 @@
+# Changelog
+
+## [1.0.1] 2026-09-05
+
+### Changed
+
+- File names for new automation.
+
 ## [1.0.0] 2026-07-05
 
 ### Changed
